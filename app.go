@@ -2,8 +2,11 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -21,6 +24,8 @@ import (
 	"OssManager/internal/remote"
 	"OssManager/internal/transfer"
 )
+
+const appVersion = "1.1.0"
 
 func logf(format string, args ...interface{}) {
 	_ = os.MkdirAll(config.DataDir(), 0o755)
@@ -48,6 +53,7 @@ func NewApp() *App {
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 	a.settings = config.LoadSettings()
+	transfer.SetConcurrency(a.settings.MaxConcurrentTransfers)
 	go a.restoreMounts()
 }
 
@@ -115,6 +121,7 @@ func (a *App) SaveSettings(value config.Settings) error {
 		return err
 	}
 	a.settings = value
+	transfer.SetConcurrency(value.MaxConcurrentTransfers)
 	return nil
 }
 
@@ -471,4 +478,130 @@ func (a *App) PreviewRemote(remotePath string) (string, error) {
 // SetClipboard 写入文本到剪贴板。
 func (a *App) SetClipboard(text string) {
 	runtime.ClipboardSetText(a.ctx, text)
+}
+
+// DownloadFolder 递归下载远程目录。
+func (a *App) DownloadFolder(remoteDir, localDir string) error {
+	return transfer.DownloadFolder(a.ctx, a.settings.RcloneConfig, remoteDir, localDir)
+}
+
+// CreateBucket 新建桶。
+func (a *App) CreateBucket(remoteName, bucket string) error {
+	return policy.CreateBucket(a.ctx, a.settings.RcloneConfig, remoteName, bucket)
+}
+
+// UpdateInfo 是更新检查结果。
+type UpdateInfo struct {
+	Current   string `json:"current"`
+	Latest    string `json:"latest"`
+	URL       string `json:"url"`
+	HasUpdate bool   `json:"hasUpdate"`
+}
+
+// CheckUpdate 查询 GitHub 最新版本。
+func (a *App) CheckUpdate() (UpdateInfo, error) {
+	info := UpdateInfo{Current: appVersion}
+	request, err := http.NewRequest("GET", "https://api.github.com/repos/wangli-dev/OssManager/releases/latest", nil)
+	if err != nil {
+		return info, err
+	}
+	request.Header.Set("User-Agent", "OssManager")
+	client := &http.Client{Timeout: 15 * time.Second}
+	response, err := client.Do(request)
+	if err != nil {
+		return info, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != 200 {
+		return info, fmt.Errorf("GitHub 返回 %d", response.StatusCode)
+	}
+	var release struct {
+		TagName string `json:"tag_name"`
+		Assets  []struct {
+			Name               string `json:"name"`
+			BrowserDownloadURL string `json:"browser_download_url"`
+		} `json:"assets"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&release); err != nil {
+		return info, err
+	}
+	info.Latest = release.TagName
+	for _, asset := range release.Assets {
+		if strings.HasSuffix(strings.ToLower(asset.Name), ".exe") {
+			info.URL = asset.BrowserDownloadURL
+			break
+		}
+	}
+	info.HasUpdate = compareVersion(strings.TrimPrefix(info.Latest, "v"), info.Current) > 0
+	return info, nil
+}
+
+func compareVersion(left, right string) int {
+	parse := func(value string) []int {
+		parts := strings.Split(strings.TrimPrefix(value, "v"), ".")
+		result := make([]int, len(parts))
+		for i, part := range parts {
+			fmt.Sscanf(part, "%d", &result[i])
+		}
+		return result
+	}
+	a, b := parse(left), parse(right)
+	for i := 0; i < len(a) || i < len(b); i++ {
+		var x, y int
+		if i < len(a) {
+			x = a[i]
+		}
+		if i < len(b) {
+			y = b[i]
+		}
+		if x != y {
+			if x > y {
+				return 1
+			}
+			return -1
+		}
+	}
+	return 0
+}
+
+// DownloadUpdate 下载新版本并启动替换脚本，随后退出程序。
+func (a *App) DownloadUpdate(url string) error {
+	if url == "" {
+		return fmt.Errorf("没有可下载的更新包")
+	}
+	response, err := http.Get(url)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != 200 {
+		return fmt.Errorf("下载失败：HTTP %d", response.StatusCode)
+	}
+	dir := config.DataDir()
+	updateExe := filepath.Join(dir, "update.exe")
+	file, err := os.Create(updateExe)
+	if err != nil {
+		return err
+	}
+	if _, err := file.ReadFrom(response.Body); err != nil {
+		file.Close()
+		return err
+	}
+	file.Close()
+	script := filepath.Join(dir, "update.cmd")
+	current := filepath.Join(dir, "OssManager.exe")
+	content := "@echo off\r\n" +
+		"timeout /t 3 /nobreak >nul\r\n" +
+		"copy /y \"" + updateExe + "\" \"" + current + "\" >nul\r\n" +
+		"start \"\" \"" + current + "\"\r\n" +
+		"del \"" + updateExe + "\"\r\n" +
+		"del \"%~f0\"\r\n"
+	if err := os.WriteFile(script, []byte(content), 0o644); err != nil {
+		return err
+	}
+	if err := exec.Command("cmd", "/c", "start", "", script).Start(); err != nil {
+		return err
+	}
+	runtime.Quit(a.ctx)
+	return nil
 }

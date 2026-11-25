@@ -27,6 +27,7 @@ export namespace config {
 	    vfsCacheMaxSize: string;
 	    vfsCacheMaxAge: string;
 	    bufferSize: string;
+	    maxConcurrentTransfers: number;
 	    serverModtimeRemotes: string[];
 	
 	    static createFrom(source: any = {}) {
@@ -43,6 +44,7 @@ export namespace config {
 	        this.vfsCacheMaxSize = source["vfsCacheMaxSize"];
 	        this.vfsCacheMaxAge = source["vfsCacheMaxAge"];
 	        this.bufferSize = source["bufferSize"];
+	        this.maxConcurrentTransfers = source["maxConcurrentTransfers"];
 	        this.serverModtimeRemotes = source["serverModtimeRemotes"];
 	    }
 	}
@@ -69,6 +71,24 @@ export namespace main {
 	        this.configPath = source["configPath"];
 	        this.dataDir = source["dataDir"];
 	        this.logPath = source["logPath"];
+	    }
+	}
+	export class UpdateInfo {
+	    current: string;
+	    latest: string;
+	    url: string;
+	    hasUpdate: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new UpdateInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.current = source["current"];
+	        this.latest = source["latest"];
+	        this.url = source["url"];
+	        this.hasUpdate = source["hasUpdate"];
 	    }
 	}
 

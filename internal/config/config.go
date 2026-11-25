@@ -17,6 +17,7 @@ type Settings struct {
 	VfsCacheMaxSize      string   `json:"vfsCacheMaxSize"`
 	VfsCacheMaxAge       string   `json:"vfsCacheMaxAge"`
 	BufferSize           string   `json:"bufferSize"`
+	MaxConcurrentTransfers int    `json:"maxConcurrentTransfers"`
 	ServerModtimeRemotes []string `json:"serverModtimeRemotes"`
 }
 
@@ -30,11 +31,14 @@ type Connection struct {
 
 // DataDir 返回本程序的用户数据目录。
 func DataDir() string {
+	if exe, err := os.Executable(); err == nil {
+		return filepath.Dir(exe)
+	}
 	if dir := os.Getenv("LOCALAPPDATA"); dir != "" {
 		return filepath.Join(dir, "OssManager")
 	}
 	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".rclone-oss-manager")
+	return filepath.Join(home, ".oss-manager")
 }
 
 // SettingsPath 返回设置文件路径。
@@ -49,28 +53,34 @@ func LoadSettings() Settings {
 		_ = json.Unmarshal(data, &value)
 	} else if old := legacySettingsPath(); old != "" {
 		if data, err := os.ReadFile(old); err == nil {
-			var legacy struct {
-				RcloneConfiguration   string   `json:"RcloneConfiguration"`
-				FileManagerExecutable string   `json:"FileManagerExecutable"`
-				Theme                 string   `json:"Theme"`
-				CacheDirectory        string   `json:"CacheDirectory"`
-				DirCacheTime          string   `json:"DirCacheTime"`
-				VfsCacheMaxSize       string   `json:"VfsCacheMaxSize"`
-				VfsCacheMaxAge        string   `json:"VfsCacheMaxAge"`
-				BufferSize            string   `json:"BufferSize"`
-				ServerModtimeRemotes  []string `json:"ServerModtimeRemotes"`
-			}
-			if json.Unmarshal(data, &legacy) == nil {
-				value.RcloneConfig = legacy.RcloneConfiguration
-				value.FileManager = legacy.FileManagerExecutable
-				if legacy.Theme != "" {
-					value.Theme = legacy.Theme
+			var modern Settings
+			if json.Unmarshal(data, &modern) == nil && strings.TrimSpace(modern.RcloneConfig) != "" {
+				// 旧 Go 版本使用小驼峰字段，直接按新结构读取。
+				value = modern
+			} else {
+				var legacy struct {
+					RcloneConfiguration   string   `json:"RcloneConfiguration"`
+					FileManagerExecutable string   `json:"FileManagerExecutable"`
+					Theme                 string   `json:"Theme"`
+					CacheDirectory        string   `json:"CacheDirectory"`
+					DirCacheTime          string   `json:"DirCacheTime"`
+					VfsCacheMaxSize       string   `json:"VfsCacheMaxSize"`
+					VfsCacheMaxAge        string   `json:"VfsCacheMaxAge"`
+					BufferSize            string   `json:"BufferSize"`
+					ServerModtimeRemotes  []string `json:"ServerModtimeRemotes"`
 				}
-				value.DirCacheTime = legacy.DirCacheTime
-				value.VfsCacheMaxSize = legacy.VfsCacheMaxSize
-				value.VfsCacheMaxAge = legacy.VfsCacheMaxAge
-				value.BufferSize = legacy.BufferSize
-				value.ServerModtimeRemotes = legacy.ServerModtimeRemotes
+				if json.Unmarshal(data, &legacy) == nil {
+					value.RcloneConfig = legacy.RcloneConfiguration
+					value.FileManager = legacy.FileManagerExecutable
+					if legacy.Theme != "" {
+						value.Theme = legacy.Theme
+					}
+					value.DirCacheTime = legacy.DirCacheTime
+					value.VfsCacheMaxSize = legacy.VfsCacheMaxSize
+					value.VfsCacheMaxAge = legacy.VfsCacheMaxAge
+					value.BufferSize = legacy.BufferSize
+					value.ServerModtimeRemotes = legacy.ServerModtimeRemotes
+				}
 			}
 		}
 	}
@@ -82,6 +92,9 @@ func LoadSettings() Settings {
 	}
 	if strings.TrimSpace(value.CacheDirectory) == "" {
 		value.CacheDirectory = executableDir()
+	}
+	if value.MaxConcurrentTransfers <= 0 {
+		value.MaxConcurrentTransfers = 4
 	}
 	return value
 }
@@ -198,9 +211,24 @@ func defaultRcloneConfig() string {
 
 func legacySettingsPath() string {
 	if dir := os.Getenv("LOCALAPPDATA"); dir != "" {
-		path := filepath.Join(dir, "RcloneOssManager", "settings.json")
-		if _, err := os.Stat(path); err == nil {
-			return path
+		for _, name := range []string{"OssManager", "RcloneOssManager"} {
+			path := filepath.Join(dir, name, "settings.json")
+			if _, err := os.Stat(path); err == nil {
+				return path
+			}
+		}
+	}
+	return ""
+}
+
+// legacyFile 返回旧用户数据目录中的指定文件。
+func legacyFile(name string) string {
+	if dir := os.Getenv("LOCALAPPDATA"); dir != "" {
+		for _, folder := range []string{"OssManager", "RcloneOssManager"} {
+			path := filepath.Join(dir, folder, name)
+			if _, err := os.Stat(path); err == nil {
+				return path
+			}
 		}
 	}
 	return ""
@@ -217,9 +245,15 @@ func MountRecordPath() string {
 	return filepath.Join(DataDir(), "mounts.txt")
 }
 
-// ReadMountRecords 读取挂载记录。
+// ReadMountRecords 读取挂载记录；新目录没有时回退读取旧用户目录，便于迁移。
 func ReadMountRecords() []MountRecord {
-	data, err := os.ReadFile(MountRecordPath())
+	path := MountRecordPath()
+	if _, err := os.Stat(path); err != nil {
+		if legacy := legacyFile("mounts.txt"); legacy != "" {
+			path = legacy
+		}
+	}
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil
 	}
@@ -252,9 +286,15 @@ func OrderPath() string {
 	return filepath.Join(DataDir(), "connection-order.txt")
 }
 
-// ReadOrder 读取连接排序。
+// ReadOrder 读取连接排序；新目录没有时回退读取旧用户目录。
 func ReadOrder() []string {
-	data, err := os.ReadFile(OrderPath())
+	path := OrderPath()
+	if _, err := os.Stat(path); err != nil {
+		if legacy := legacyFile("connection-order.txt"); legacy != "" {
+			path = legacy
+		}
+	}
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil
 	}

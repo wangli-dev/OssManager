@@ -14,12 +14,24 @@ import (
 	"github.com/rclone/rclone/fs/config"
 	"github.com/rclone/rclone/fs/config/configfile"
 	"github.com/rclone/rclone/fs/operations"
+	rwalk "github.com/rclone/rclone/fs/walk"
 )
 
 var (
 	mu         sync.Mutex
 	activeConf string
+	transfers  int
 )
+
+// SetConcurrency 设置传输并发数；0 表示使用 rclone 默认。
+func SetConcurrency(value int) {
+	mu.Lock()
+	transfers = value
+	mu.Unlock()
+	if value > 0 {
+		fs.GetConfig(context.Background()).Transfers = value
+	}
+}
 
 func ensureConfig(path string) error {
 	mu.Lock()
@@ -33,6 +45,47 @@ func ensureConfig(path string) error {
 	configfile.Install()
 	activeConf = path
 	return nil
+}
+
+// DownloadFolder 递归下载远程目录到本地目录。
+func DownloadFolder(ctx context.Context, confPath, remoteDir, localDir string) error {
+	if err := ensureConfig(confPath); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(localDir, 0o755); err != nil {
+		return err
+	}
+	srcFs, err := fs.NewFs(ctx, remoteDir)
+	if err != nil {
+		return err
+	}
+	return rwalk.Walk(ctx, srcFs, "", false, -1, func(path string, entries fs.DirEntries, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		for _, entry := range entries {
+			obj, ok := entry.(fs.Object)
+			if !ok {
+				continue
+			}
+			relative := obj.Remote()
+			target := localDir
+			if dir := filepath.Dir(relative); dir != "." {
+				target = filepath.Join(localDir, dir)
+			}
+			if err := os.MkdirAll(target, 0o755); err != nil {
+				return err
+			}
+			dstFs, err := fs.NewFs(ctx, target)
+			if err != nil {
+				return err
+			}
+			if _, err := operations.Copy(ctx, dstFs, nil, filepath.Base(relative), obj); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 // splitRemote 把 remote:bucket/dir/file 拆成父目录和文件名。

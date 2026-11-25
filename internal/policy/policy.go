@@ -73,6 +73,13 @@ func GetACL(ctx context.Context, confPath, remote, bucket string) (ACL, error) {
 	return result, nil
 }
 
+// CreateBucket 新建桶。
+func CreateBucket(ctx context.Context, confPath, remote, bucket string) error {
+	client := clientFor(confPath, remote)
+	_, err := client.CreateBucket(ctx, &s3.CreateBucketInput{Bucket: aws.String(bucket)})
+	return err
+}
+
 // Presign 生成预签名 GET 链接。
 func Presign(ctx context.Context, confPath, remote, bucket, key string, expiry time.Duration) (string, error) {
 	client := clientFor(confPath, remote)

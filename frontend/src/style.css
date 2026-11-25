@@ -182,6 +182,10 @@ dialog .footer { display: flex; justify-content: flex-end; gap: 8px; margin-top:
 .crumbs .trail { display: inline-flex; gap: 4px; align-items: center; flex-wrap: wrap; }
 .crumbs .trail a { border: none; padding: 1px 4px; }
 .crumbs .trail a:hover { background: var(--accent-soft); }
+.crumbs .abs { margin-left: auto; color: var(--muted); font-size: 12px; max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+td.ops, th.ops { width: 220px; white-space: nowrap; }
+td.ops button { padding: 2px 8px; font-size: 12px; margin-right: 4px; }
 
 .toast {
   position: fixed;

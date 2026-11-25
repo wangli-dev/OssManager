@@ -142,6 +142,8 @@ function renderShell() {
         <div><label>缓存保留时长</label><input id="set-cache-age" /></div>
       </div>
       <label>传输缓冲</label><input id="set-buffer" />
+      <label>并发传输数（下载/上传同时进行）</label>
+      <input id="set-transfers" type="number" min="1" max="16" />
       <div class="footer">
         <button id="settings-cancel">取消</button>
         <button id="settings-save" class="primary">保存</button>
@@ -175,6 +177,7 @@ function renderShell() {
       <h2>关于</h2>
       <div id="about-info" class="about-info"></div>
       <div class="footer">
+        <button id="about-update">检查更新</button>
         <button id="about-log">查看日志</button>
         <button id="about-datadir">打开数据目录</button>
         <button id="about-close" class="primary">关闭</button>
@@ -198,6 +201,7 @@ function renderShell() {
   document.getElementById('btn-about').onclick = openAbout;
   document.getElementById('btn-settings').onclick = openSettings;
   document.getElementById('about-close').onclick = () => document.getElementById('about-dialog').close();
+  document.getElementById('about-update').onclick = checkUpdate;
   document.getElementById('mount-cancel').onclick = () => document.getElementById('mount-dialog').close();
   document.getElementById('mount-ok').onclick = confirmMount;
   document.getElementById('input-cancel').onclick = () => { document.getElementById('input-value').value = ''; document.getElementById('input-dialog').close(); };
@@ -336,7 +340,10 @@ function renderEntries() {
     const target = parts.slice(0, index + 1).join('/');
     trail += ` / <a href="#" data-path="${esc(target)}">${esc(part)}</a>`;
   });
-  crumbs.innerHTML = `<a href="#" id="go-up">↑ 上级</a><span class="trail">${trail}</span>`;
+  const connection = state.connections.find((c) => c.name === state.active);
+  const base = connection && connection.endpoint ? connection.endpoint.replace(/\/$/, '') : '';
+  const absPath = base ? base + (state.path ? '/' + state.path : '') : '';
+  crumbs.innerHTML = `<a href="#" id="go-up">↑ 上级</a><span class="trail">${trail}</span><span class="abs" title="${esc(absPath)}">${esc(absPath)}</span>`;
   document.getElementById('go-up').onclick = (e) => { e.preventDefault(); goUp(); };
   crumbs.querySelectorAll('a[data-path]').forEach((link) => {
     link.onclick = (e) => { e.preventDefault(); state.path = link.dataset.path; loadEntries(); };
@@ -344,17 +351,41 @@ function renderEntries() {
 
   const host = document.getElementById('entries');
   if (!state.entries.length) { host.innerHTML = '<div class="empty">此位置没有对象</div>'; return; }
-  const rows = state.entries.map((en) => `<tr class="row ${en.isDir ? 'dir' : 'file'}" data-name="${esc(en.name)}" data-dir="${en.isDir}">
-      <td><span class="icon">${en.isDir ? '📁' : '📄'}</span>${esc(en.name)}</td>
-      <td class="size">${esc(en.isDir ? '' : fmtSize(en.size))}</td>
-      <td class="time">${esc(en.modTime || '')}</td></tr>`).join('');
-  host.innerHTML = `<table><thead><tr><th>名称</th><th class="size">大小</th><th class="time">修改时间</th></tr></thead><tbody>${rows}</tbody></table>`;
+  const rows = state.entries.map((en) => {
+    const ops = en.isDir
+      ? '<button data-op="enter">进入</button><button data-op="size">统计</button>'
+      : '<button data-op="preview">预览</button><button data-op="download">下载</button><button data-op="info">属性</button><button data-op="link">链接</button>';
+    const cls = en.isDir ? 'dir' : 'file';
+    const icon = en.isDir ? '📁' : '📄';
+    const size = en.isDir ? '' : fmtSize(en.size);
+    return `<tr class="row ${cls}" data-name="${esc(en.name)}" data-dir="${en.isDir}">
+      <td><span class="icon">${icon}</span>${esc(en.name)}</td>
+      <td class="size">${esc(size)}</td>
+      <td class="time">${esc(en.modTime || '')}</td>
+      <td class="ops">${ops}</td>
+    </tr>`;
+  }).join('');
+  host.innerHTML = `<table><thead><tr><th>名称</th><th class="size">大小</th><th class="time">修改时间</th><th class="ops">操作</th></tr></thead><tbody>${rows}</tbody></table>`;
   host.querySelectorAll('tr.row').forEach((row) => {
     row.onclick = () => {
       host.querySelectorAll('tr.selected').forEach((item) => item.classList.remove('selected'));
       row.classList.add('selected');
       state.selected = { name: row.dataset.name, isDir: row.dataset.dir === 'true' };
     };
+    row.querySelectorAll('button[data-op]').forEach((button) => {
+      button.onclick = (e) => {
+        e.stopPropagation();
+        const name = row.dataset.name;
+        const remotePath = state.active + ':' + (state.path ? state.path + '/' : '') + name;
+        const op = button.dataset.op;
+        if (op === 'enter') enterDir(name);
+        else if (op === 'size') showSize(remotePath);
+        else if (op === 'preview') previewEntry(remotePath);
+        else if (op === 'download') downloadEntry(name);
+        else if (op === 'info') showInfo(remotePath);
+        else if (op === 'link') copyLink(remotePath);
+      };
+    });
     row.ondblclick = () => {
       if (row.dataset.dir === 'true') enterDir(row.dataset.name);
       else downloadEntry(row.dataset.name);
@@ -368,7 +399,11 @@ function renderEntries() {
       if (isDir) {
         items.push({ label: '进入', action: () => enterDir(name) });
         items.push({ label: '统计占用…', action: () => showSize(remotePath) });
-        if (!state.path) items.push({ label: '编辑桶策略…', action: () => openPolicy(name) });
+        items.push({ label: '下载目录…', action: () => downloadFolder(remotePath) });
+        if (!state.path) {
+          items.push({ label: '编辑桶策略…', action: () => openPolicy(name) });
+          items.push({ label: '新建桶…', action: () => createBucket() });
+        }
       } else {
         items.push({ label: '预览', action: () => previewEntry(remotePath) });
         items.push({ label: '下载…', action: () => downloadEntry(name) });
@@ -588,6 +623,32 @@ async function deleteEntry(name, isDir) {
   catch (err) { notify('删除失败：' + err, true); }
 }
 
+async function downloadFolder(remotePath) {
+  const dir = await api().PickFolder();
+  if (!dir) return;
+  setStatus('正在下载目录…');
+  try { await api().DownloadFolder(remotePath, dir); notify('目录下载完成'); }
+  catch (err) { notify('下载失败：' + err, true); }
+}
+
+async function createBucket() {
+  const name = await askInput('新桶名称', '');
+  if (!name) return;
+  try { await api().CreateBucket(state.active, name); await loadEntries(); notify('已创建桶'); }
+  catch (err) { notify('创建桶失败：' + err, true); }
+}
+
+async function checkUpdate() {
+  try {
+    const info = await api().CheckUpdate();
+    if (!info.hasUpdate) { notify('当前已是最新版（' + info.current + '）'); return; }
+    if (!info.url) { notify('发现新版本 ' + info.latest + '，但没有可下载的 exe', true); return; }
+    if (!window.confirm('发现新版本 ' + info.latest + '（当前 ' + info.current + '），现在下载并重启更新？')) return;
+    notify('正在下载更新，完成后会自动重启…');
+    await api().DownloadUpdate(info.url);
+  } catch (err) { notify('检查更新失败：' + err, true); }
+}
+
 async function uploadFolder() {
   if (!state.active) { notify('请先选择连接', true); return; }
   const dir = await api().PickFolder();
@@ -691,6 +752,7 @@ function openSettings() {
   document.getElementById('set-cache-size').value = s.vfsCacheMaxSize || '';
   document.getElementById('set-cache-age').value = s.vfsCacheMaxAge || '';
   document.getElementById('set-buffer').value = s.bufferSize || '';
+  document.getElementById('set-transfers').value = s.maxConcurrentTransfers || 4;
   document.getElementById('settings-dialog').showModal();
 }
 
@@ -704,6 +766,7 @@ async function saveSettings() {
     vfsCacheMaxSize: document.getElementById('set-cache-size').value.trim(),
     vfsCacheMaxAge: document.getElementById('set-cache-age').value.trim(),
     bufferSize: document.getElementById('set-buffer').value.trim(),
+    maxConcurrentTransfers: parseInt(document.getElementById('set-transfers').value, 10) || 4,
   };
   try { await api().SaveSettings(next); state.settings = next; document.getElementById('settings-dialog').close(); await refresh(); setStatus('设置已保存'); }
   catch (err) { setStatus('保存设置失败：' + err, true); }
