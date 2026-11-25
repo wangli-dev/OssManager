@@ -179,6 +179,9 @@ dialog .footer { display: flex; justify-content: flex-end; gap: 8px; margin-top:
 }
 
 .crumbs a:hover { background: var(--accent-soft); }
+.crumbs .trail { display: inline-flex; gap: 4px; align-items: center; flex-wrap: wrap; }
+.crumbs .trail a { border: none; padding: 1px 4px; }
+.crumbs .trail a:hover { background: var(--accent-soft); }
 
 .toast {
   position: fixed;

@@ -8,6 +8,8 @@ import {rclonefs} from '../models';
 
 export function CopyRemoteToClipboard(arg1:string):Promise<string>;
 
+export function Delete(arg1:string,arg2:boolean):Promise<void>;
+
 export function DeleteConnection(arg1:string):Promise<void>;
 
 export function Download(arg1:string,arg2:string):Promise<string>;
@@ -36,7 +38,13 @@ export function ListConnections():Promise<Array<config.Connection>>;
 
 export function ListMounts():Promise<Record<string, string>>;
 
+export function Mkdir(arg1:string):Promise<void>;
+
 export function Mount(arg1:string,arg2:string,arg3:string):Promise<void>;
+
+export function Move(arg1:string,arg2:string):Promise<void>;
+
+export function ObjectInfo(arg1:string):Promise<Record<string, string>>;
 
 export function OpenDataDir():Promise<void>;
 
@@ -50,6 +58,10 @@ export function PickFolder():Promise<string>;
 
 export function PickSaveFile(arg1:string):Promise<string>;
 
+export function Presign(arg1:string):Promise<string>;
+
+export function PreviewRemote(arg1:string):Promise<string>;
+
 export function PutPolicy(arg1:string,arg2:string,arg3:string):Promise<void>;
 
 export function RenameConnection(arg1:string,arg2:string):Promise<void>;
@@ -60,6 +72,10 @@ export function SaveConnectionOrder(arg1:Array<string>):Promise<void>;
 
 export function SaveSettings(arg1:config.Settings):Promise<void>;
 
+export function SetClipboard(arg1:string):Promise<void>;
+
+export function Size(arg1:string):Promise<string>;
+
 export function TestConnection(arg1:string):Promise<void>;
 
 export function Unmount(arg1:string):Promise<void>;
@@ -67,3 +83,5 @@ export function Unmount(arg1:string):Promise<void>;
 export function UnmountByRemote(arg1:string):Promise<void>;
 
 export function Upload(arg1:string,arg2:string):Promise<void>;
+
+export function UploadFolder(arg1:string,arg2:string):Promise<void>;

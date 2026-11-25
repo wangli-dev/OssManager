@@ -2,6 +2,7 @@ package transfer
 
 import (
 	"context"
+	iofs "io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -92,4 +93,29 @@ func Upload(ctx context.Context, confPath, localPath, remoteDir string) error {
 	}
 	_, err = operations.Copy(ctx, dstFs, nil, filepath.Base(localPath), srcObj)
 	return err
+}
+
+// UploadFolder 递归上传本地目录，保留相对目录结构。
+func UploadFolder(ctx context.Context, confPath, localDir, remoteRoot string) error {
+	if err := ensureConfig(confPath); err != nil {
+		return err
+	}
+	return filepath.WalkDir(localDir, func(path string, entry iofs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		relative, relErr := filepath.Rel(localDir, path)
+		if relErr != nil {
+			return relErr
+		}
+		sub := filepath.ToSlash(filepath.Dir(relative))
+		target := remoteRoot
+		if sub != "." && sub != "" {
+			target = strings.TrimSuffix(remoteRoot, "/") + "/" + sub
+		}
+		return Upload(ctx, confPath, path, target)
+	})
 }

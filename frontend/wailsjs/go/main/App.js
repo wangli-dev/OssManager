@@ -6,6 +6,10 @@ export function CopyRemoteToClipboard(arg1) {
   return window['go']['main']['App']['CopyRemoteToClipboard'](arg1);
 }
 
+export function Delete(arg1, arg2) {
+  return window['go']['main']['App']['Delete'](arg1, arg2);
+}
+
 export function DeleteConnection(arg1) {
   return window['go']['main']['App']['DeleteConnection'](arg1);
 }
@@ -62,8 +66,20 @@ export function ListMounts() {
   return window['go']['main']['App']['ListMounts']();
 }
 
+export function Mkdir(arg1) {
+  return window['go']['main']['App']['Mkdir'](arg1);
+}
+
 export function Mount(arg1, arg2, arg3) {
   return window['go']['main']['App']['Mount'](arg1, arg2, arg3);
+}
+
+export function Move(arg1, arg2) {
+  return window['go']['main']['App']['Move'](arg1, arg2);
+}
+
+export function ObjectInfo(arg1) {
+  return window['go']['main']['App']['ObjectInfo'](arg1);
 }
 
 export function OpenDataDir() {
@@ -90,6 +106,14 @@ export function PickSaveFile(arg1) {
   return window['go']['main']['App']['PickSaveFile'](arg1);
 }
 
+export function Presign(arg1) {
+  return window['go']['main']['App']['Presign'](arg1);
+}
+
+export function PreviewRemote(arg1) {
+  return window['go']['main']['App']['PreviewRemote'](arg1);
+}
+
 export function PutPolicy(arg1, arg2, arg3) {
   return window['go']['main']['App']['PutPolicy'](arg1, arg2, arg3);
 }
@@ -110,6 +134,14 @@ export function SaveSettings(arg1) {
   return window['go']['main']['App']['SaveSettings'](arg1);
 }
 
+export function SetClipboard(arg1) {
+  return window['go']['main']['App']['SetClipboard'](arg1);
+}
+
+export function Size(arg1) {
+  return window['go']['main']['App']['Size'](arg1);
+}
+
 export function TestConnection(arg1) {
   return window['go']['main']['App']['TestConnection'](arg1);
 }
@@ -124,4 +156,8 @@ export function UnmountByRemote(arg1) {
 
 export function Upload(arg1, arg2) {
   return window['go']['main']['App']['Upload'](arg1, arg2);
+}
+
+export function UploadFolder(arg1, arg2) {
+  return window['go']['main']['App']['UploadFolder'](arg1, arg2);
 }

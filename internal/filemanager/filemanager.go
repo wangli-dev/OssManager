@@ -27,3 +27,8 @@ func Open(path, configured string) error {
 	}
 	return exec.Command("explorer.exe", path).Start()
 }
+
+// Preview 用系统默认程序打开文件。
+func Preview(path string) error {
+	return exec.Command("cmd", "/c", "start", "", path).Start()
+}

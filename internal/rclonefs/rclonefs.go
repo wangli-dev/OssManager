@@ -2,7 +2,9 @@ package rclonefs
 
 import (
 	"context"
+	"fmt"
 	"sort"
+	"strings"
 	"sync"
 
 	_ "github.com/rclone/rclone/backend/local"
@@ -10,6 +12,8 @@ import (
 	"github.com/rclone/rclone/fs"
 	"github.com/rclone/rclone/fs/config"
 	"github.com/rclone/rclone/fs/config/configfile"
+	hashpkg "github.com/rclone/rclone/fs/hash"
+	"github.com/rclone/rclone/fs/operations"
 )
 
 // Entry 是目录中的一项，供前端展示。
@@ -74,4 +78,114 @@ func List(ctx context.Context, confPath, remote string) ([]Entry, error) {
 		return result[i].Name < result[j].Name
 	})
 	return result, nil
+}
+
+func splitPath(remotePath string) (string, string) {
+	index := strings.LastIndex(remotePath, "/")
+	if index < 0 {
+		return remotePath, ""
+	}
+	return remotePath[:index], remotePath[index+1:]
+}
+
+func objectOf(ctx context.Context, remotePath string) (fs.Fs, fs.Object, error) {
+	parent, name := splitPath(remotePath)
+	f, err := fs.NewFs(ctx, parent)
+	if err != nil {
+		return nil, nil, err
+	}
+	obj, err := f.NewObject(ctx, name)
+	if err != nil {
+		return nil, nil, err
+	}
+	return f, obj, nil
+}
+
+// Mkdir 新建远程目录。
+func Mkdir(ctx context.Context, confPath, remoteDir string) error {
+	if err := ensureConfig(confPath); err != nil {
+		return err
+	}
+	f, err := fs.NewFs(ctx, remoteDir)
+	if err != nil {
+		return err
+	}
+	return f.Mkdir(ctx, "")
+}
+
+// Move 重命名或移动远程对象。
+func Move(ctx context.Context, confPath, oldPath, newPath string) error {
+	if err := ensureConfig(confPath); err != nil {
+		return err
+	}
+	_, src, err := objectOf(ctx, oldPath)
+	if err != nil {
+		return err
+	}
+	parent, name := splitPath(newPath)
+	dstFs, err := fs.NewFs(ctx, parent)
+	if err != nil {
+		return err
+	}
+	_, err = operations.Move(ctx, dstFs, nil, name, src)
+	return err
+}
+
+// Delete 删除远程文件或目录（目录会递归删除）。
+func Delete(ctx context.Context, confPath, remotePath string, isDir bool) error {
+	if err := ensureConfig(confPath); err != nil {
+		return err
+	}
+	if isDir {
+		f, err := fs.NewFs(ctx, remotePath)
+		if err != nil {
+			return err
+		}
+		return operations.Purge(ctx, f, "")
+	}
+	_, obj, err := objectOf(ctx, remotePath)
+	if err != nil {
+		return err
+	}
+	return obj.Remove(ctx)
+}
+
+// Size 统计目录对象数量与总大小。
+func Size(ctx context.Context, confPath, remotePath string) (int64, int64, error) {
+	if err := ensureConfig(confPath); err != nil {
+		return 0, 0, err
+	}
+	f, err := fs.NewFs(ctx, remotePath)
+	if err != nil {
+		return 0, 0, err
+	}
+	objects, size, _, err := operations.Count(ctx, f)
+	return objects, size, err
+}
+
+// ObjectInfo 返回对象的基本属性，供属性面板展示。
+func ObjectInfo(ctx context.Context, confPath, remotePath string) (map[string]string, error) {
+	if err := ensureConfig(confPath); err != nil {
+		return nil, err
+	}
+	_, obj, err := objectOf(ctx, remotePath)
+	if err != nil {
+		return nil, err
+	}
+	info := map[string]string{
+		"名称":   obj.Remote(),
+		"大小":   fmt.Sprintf("%d", obj.Size()),
+		"修改时间": obj.ModTime(ctx).Format("2006-01-02 15:04:05"),
+	}
+	if typer, ok := obj.(fs.MimeTyper); ok {
+		if mime := typer.MimeType(ctx); mime != "" {
+			info["MIME 类型"] = mime
+		}
+	}
+	if hashType := obj.Fs().Hashes().GetOne(); hashType != hashpkg.None {
+		if value, err := obj.Hash(ctx, hashType); err == nil && value != "" {
+			info[strings.ToUpper(fmt.Sprintf("%v", hashType))] = strings.ToUpper(value)
+		}
+	}
+	return info, nil
 }

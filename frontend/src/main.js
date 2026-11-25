@@ -158,6 +158,19 @@ function renderShell() {
         <button id="mount-ok" class="primary">挂载</button>
       </div>
     </dialog>
+    <dialog id="input-dialog">
+      <h2 id="input-title">输入</h2>
+      <input id="input-value" />
+      <div class="footer">
+        <button id="input-cancel">取消</button>
+        <button id="input-ok" class="primary">确定</button>
+      </div>
+    </dialog>
+    <dialog id="info-dialog">
+      <h2>对象属性</h2>
+      <div id="info-body" class="about-info"></div>
+      <div class="footer"><button id="info-close" class="primary">关闭</button></div>
+    </dialog>
     <dialog id="about-dialog">
       <h2>关于</h2>
       <div id="about-info" class="about-info"></div>
@@ -186,7 +199,10 @@ function renderShell() {
   document.getElementById('btn-settings').onclick = openSettings;
   document.getElementById('about-close').onclick = () => document.getElementById('about-dialog').close();
   document.getElementById('mount-cancel').onclick = () => document.getElementById('mount-dialog').close();
-  document.getElementById('mount-ok').onclick = confirmMount;  document.getElementById('about-log').onclick = openLog;
+  document.getElementById('mount-ok').onclick = confirmMount;
+  document.getElementById('input-cancel').onclick = () => { document.getElementById('input-value').value = ''; document.getElementById('input-dialog').close(); };
+  document.getElementById('input-ok').onclick = () => document.getElementById('input-dialog').close();
+  document.getElementById('info-close').onclick = () => document.getElementById('info-dialog').close();  document.getElementById('about-log').onclick = openLog;
   document.getElementById('about-datadir').onclick = () => api().OpenDataDir().catch((err) => toast('打开失败：' + err, true));
   document.getElementById('log-close').onclick = () => document.getElementById('log-dialog').close();
   document.getElementById('edit-cancel').onclick = () => document.getElementById('edit-dialog').close();
@@ -315,10 +331,16 @@ function renderEntries() {
     return;
   }
   const parts = state.path ? state.path.split('/').filter(Boolean) : [];
-  let trail = `<b>${esc(state.active)}</b>`;
-  parts.forEach((p) => { trail += ` / ${esc(p)}`; });
-  crumbs.innerHTML = `<a href="#" id="go-up">↑ 上级</a><span>${trail}</span>`;
+  let trail = `<a href="#" data-path="">${esc(state.active)}</a>`;
+  parts.forEach((part, index) => {
+    const target = parts.slice(0, index + 1).join('/');
+    trail += ` / <a href="#" data-path="${esc(target)}">${esc(part)}</a>`;
+  });
+  crumbs.innerHTML = `<a href="#" id="go-up">↑ 上级</a><span class="trail">${trail}</span>`;
   document.getElementById('go-up').onclick = (e) => { e.preventDefault(); goUp(); };
+  crumbs.querySelectorAll('a[data-path]').forEach((link) => {
+    link.onclick = (e) => { e.preventDefault(); state.path = link.dataset.path; loadEntries(); };
+  });
 
   const host = document.getElementById('entries');
   if (!state.entries.length) { host.innerHTML = '<div class="empty">此位置没有对象</div>'; return; }
@@ -339,13 +361,28 @@ function renderEntries() {
     };
     row.oncontextmenu = (e) => {
       e.preventDefault();
-      const name = row.dataset.name; const isDir = row.dataset.dir === 'true';
+      const name = row.dataset.name;
+      const isDir = row.dataset.dir === 'true';
+      const remotePath = state.active + ':' + (state.path ? state.path + '/' : '') + name;
       const items = [];
-      if (isDir) items.push({ label: '进入', action: () => enterDir(name) });
-      else items.push({ label: '下载…', action: () => downloadEntry(name) });
-      if (!state.path && isDir) items.push({ label: '编辑桶策略…', action: () => openPolicy(name) });
+      if (isDir) {
+        items.push({ label: '进入', action: () => enterDir(name) });
+        items.push({ label: '统计占用…', action: () => showSize(remotePath) });
+        if (!state.path) items.push({ label: '编辑桶策略…', action: () => openPolicy(name) });
+      } else {
+        items.push({ label: '预览', action: () => previewEntry(remotePath) });
+        items.push({ label: '下载…', action: () => downloadEntry(name) });
+        items.push({ label: '复制下载链接（7 天）', action: () => copyLink(remotePath) });
+        items.push({ label: '对象属性…', action: () => showInfo(remotePath) });
+      }
+      items.push({ label: '复制路径', action: () => copyPath(remotePath, true) });
+      items.push({ label: '复制 rclone 路径', action: () => copyPath(remotePath, false) });
+      items.push({ label: '重命名…', action: () => renameEntry(name, isDir) });
+      items.push({ label: '新建目录…', action: () => createDir() });
+      items.push({ label: '上传文件夹…', action: () => uploadFolder() });
       const drive = mountDriveOf(state.active);
-      if (drive) items.push({ label: '在文件管理器中打开', action: () => api().OpenFolder(drive + '\\') });
+      if (drive) items.push({ label: '在文件管理器中打开', action: () => api().OpenFolder(drive + '\\' + state.path.replace(/\//g, '\\')) });
+      items.push({ label: '删除…', danger: true, action: () => deleteEntry(name, isDir) });
       showMenu(e.clientX, e.clientY, items);
     };
   });
@@ -472,6 +509,94 @@ document.addEventListener('keydown', (e) => {
   if (key === 'c' && state.active) { e.preventDefault(); copySelected(); }
   else if (key === 'v' && state.active) { e.preventDefault(); pasteInto(); }
 });
+
+function askInput(title, value) {
+  return new Promise((resolve) => {
+    const dialog = document.getElementById('input-dialog');
+    document.getElementById('input-title').textContent = title;
+    const input = document.getElementById('input-value');
+    input.value = value || '';
+    dialog.showModal();
+    input.focus();
+    dialog.addEventListener('close', () => resolve(input.value.trim()), { once: true });
+  });
+}
+
+async function previewEntry(remotePath) {
+  setStatus('正在准备预览…');
+  try { const local = await api().PreviewRemote(remotePath); notify('已打开预览：' + local); }
+  catch (err) { notify('预览失败：' + err, true); }
+}
+
+async function showInfo(remotePath) {
+  try {
+    const info = await api().ObjectInfo(remotePath);
+    document.getElementById('info-body').innerHTML = Object.keys(info).map((key) => `<p>${esc(key)}：${esc(info[key])}</p>`).join('');
+    document.getElementById('info-dialog').showModal();
+  } catch (err) { notify('读取属性失败：' + err, true); }
+}
+
+async function copyPath(remotePath, absolute) {
+  let value = remotePath;
+  if (absolute) {
+    const connection = state.connections.find((c) => c.name === state.active);
+    if (connection && connection.endpoint) {
+      const rest = remotePath.substring(remotePath.indexOf(':') + 1).replace(/^\//, '');
+      value = connection.endpoint.replace(/\/$/, '') + '/' + rest;
+    }
+  }
+  api().SetClipboard(value);
+  notify('已复制：' + value);
+}
+
+async function copyLink(remotePath) {
+  try {
+    const link = await api().Presign(remotePath);
+    api().SetClipboard(link);
+    notify('已复制下载链接（7 天有效）');
+  } catch (err) { notify('生成链接失败：' + err, true); }
+}
+
+async function showSize(remotePath) {
+  setStatus('正在统计…');
+  try { const text = await api().Size(remotePath); notify(text); }
+  catch (err) { notify('统计失败：' + err, true); }
+}
+
+async function createDir() {
+  if (!state.active) { notify('请先选择连接', true); return; }
+  const name = await askInput('新建目录名称', '');
+  if (!name) return;
+  const target = state.active + ':' + (state.path ? state.path + '/' : '') + name;
+  try { await api().Mkdir(target); await loadEntries(); notify('已创建目录'); }
+  catch (err) { notify('创建失败：' + err, true); }
+}
+
+async function renameEntry(name) {
+  const next = await askInput('新名称', name);
+  if (!next || next === name) return;
+  const base = state.active + ':' + (state.path ? state.path + '/' : '');
+  try { await api().Move(base + name, base + next); await loadEntries(); notify('已重命名'); }
+  catch (err) { notify('重命名失败：' + err, true); }
+}
+
+async function deleteEntry(name, isDir) {
+  if (!window.confirm('确定删除 ' + name + (isDir ? '（目录及其内容）' : '') + '？')) return;
+  const target = state.active + ':' + (state.path ? state.path + '/' : '') + name;
+  setStatus('正在删除…');
+  try { await api().Delete(target, isDir); await loadEntries(); notify('已删除'); }
+  catch (err) { notify('删除失败：' + err, true); }
+}
+
+async function uploadFolder() {
+  if (!state.active) { notify('请先选择连接', true); return; }
+  const dir = await api().PickFolder();
+  if (!dir) return;
+  const remoteDir = state.active + ':' + state.path;
+  setStatus('正在上传目录 ' + dir + ' …');
+  try { await api().UploadFolder(remoteDir, dir); await loadEntries(); notify('目录上传完成'); }
+  catch (err) { notify('上传失败：' + err, true); }
+}
 
 async function downloadEntry(name) {
   const dir = await api().PickFolder();

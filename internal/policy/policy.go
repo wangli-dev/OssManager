@@ -3,6 +3,7 @@ package policy
 import (
 	"context"
 	"strings"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/credentials"
@@ -51,8 +52,7 @@ type ACL struct {
 }
 
 // GetACL 读取桶 ACL 摘要。
-func GetACL(ctx context.Context, confPath, remote, bucket string) (ACL, error) {
-	client := clientFor(confPath, remote)
+func GetACL(ctx context.Context, confPath, remote, bucket string) (ACL, error) {	client := clientFor(confPath, remote)
 	out, err := client.GetBucketAcl(ctx, &s3.GetBucketAclInput{Bucket: aws.String(bucket)})
 	if err != nil {
 		return ACL{}, err
@@ -71,6 +71,20 @@ func GetACL(ctx context.Context, confPath, remote, bucket string) (ACL, error) {
 		result.Grants = append(result.Grants, item)
 	}
 	return result, nil
+}
+
+// Presign 生成预签名 GET 链接。
+func Presign(ctx context.Context, confPath, remote, bucket, key string, expiry time.Duration) (string, error) {
+	client := clientFor(confPath, remote)
+	presigner := s3.NewPresignClient(client)
+	out, err := presigner.PresignGetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(bucket),
+		Key:    aws.String(key),
+	}, s3.WithPresignExpires(expiry))
+	if err != nil {
+		return "", err
+	}
+	return out.URL, nil
 }
 
 func clientFor(confPath, remote string) *s3.Client {

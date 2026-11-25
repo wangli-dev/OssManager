@@ -407,3 +407,68 @@ func (a *App) OpenDataDir() error {
 func (a *App) SaveConnectionOrder(names []string) error {
 	return config.WriteOrder(names)
 }
+
+// Mkdir 新建远程目录。
+func (a *App) Mkdir(remotePath string) error {
+	return rclonefs.Mkdir(a.ctx, a.settings.RcloneConfig, remotePath)
+}
+
+// Move 重命名远程对象。
+func (a *App) Move(oldPath, newPath string) error {
+	return rclonefs.Move(a.ctx, a.settings.RcloneConfig, oldPath, newPath)
+}
+
+// Delete 删除远程对象或目录。
+func (a *App) Delete(remotePath string, isDir bool) error {
+	return rclonefs.Delete(a.ctx, a.settings.RcloneConfig, remotePath, isDir)
+}
+
+// ObjectInfo 返回对象属性。
+func (a *App) ObjectInfo(remotePath string) (map[string]string, error) {
+	return rclonefs.ObjectInfo(a.ctx, a.settings.RcloneConfig, remotePath)
+}
+
+// Size 统计目录占用。
+func (a *App) Size(remotePath string) (string, error) {
+	objects, bytes, err := rclonefs.Size(a.ctx, a.settings.RcloneConfig, remotePath)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("对象 %d 个，总大小 %.1f MB", objects, float64(bytes)/1024/1024), nil
+}
+
+// Presign 生成 7 天有效的下载链接。
+func (a *App) Presign(remotePath string) (string, error) {
+	colon := strings.Index(remotePath, ":")
+	if colon <= 0 {
+		return "", fmt.Errorf("路径格式应为 连接:桶/对象")
+	}
+	remoteName := remotePath[:colon]
+	rest := strings.TrimPrefix(remotePath[colon+1:], "/")
+	slash := strings.Index(rest, "/")
+	if slash <= 0 || slash == len(rest)-1 {
+		return "", fmt.Errorf("请选择桶内的文件")
+	}
+	bucket := rest[:slash]
+	key := rest[slash+1:]
+	return policy.Presign(a.ctx, a.settings.RcloneConfig, remoteName, bucket, key, 7*24*time.Hour)
+}
+
+// UploadFolder 递归上传本地目录。
+func (a *App) UploadFolder(remoteDir, localDir string) error {
+	return transfer.UploadFolder(a.ctx, a.settings.RcloneConfig, localDir, remoteDir)
+}
+
+// PreviewRemote 下载对象到临时目录并用系统默认程序打开。
+func (a *App) PreviewRemote(remotePath string) (string, error) {
+	local, err := transfer.Download(a.ctx, a.settings.RcloneConfig, remotePath, filepath.Join(config.DataDir(), "preview"))
+	if err != nil {
+		return "", err
+	}
+	return local, filemanager.Preview(local)
+}
+
+// SetClipboard 写入文本到剪贴板。
+func (a *App) SetClipboard(text string) {
+	runtime.ClipboardSetText(a.ctx, text)
+}
