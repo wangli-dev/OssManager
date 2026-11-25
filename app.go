@@ -358,13 +358,27 @@ func (a *App) GetAbout() AboutInfo {
 	}
 }
 
-// GetLog 返回最近的运行日志。
+// GetLog 返回最近的运行日志，只读取文件尾部避免大日志占用内存。
 func (a *App) GetLog() string {
-	data, err := os.ReadFile(filepath.Join(config.DataDir(), "go.log"))
+	file, err := os.Open(filepath.Join(config.DataDir(), "go.log"))
 	if err != nil {
 		return ""
 	}
-	lines := strings.Split(string(data), "\n")
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return ""
+	}
+	const tail = 256 * 1024
+	start := int64(0)
+	if info.Size() > tail {
+		start = info.Size() - tail
+	}
+	buffer := make([]byte, info.Size()-start)
+	if _, err := file.ReadAt(buffer, start); err != nil {
+		return ""
+	}
+	lines := strings.Split(string(buffer), "\n")
 	if len(lines) > 200 {
 		lines = lines[len(lines)-200:]
 	}

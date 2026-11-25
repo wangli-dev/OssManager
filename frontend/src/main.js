@@ -316,7 +316,10 @@ function renderEntries() {
       row.classList.add('selected');
       state.selected = { name: row.dataset.name, isDir: row.dataset.dir === 'true' };
     };
-    row.ondblclick = () => { if (row.dataset.dir === 'true') enterDir(row.dataset.name); };
+    row.ondblclick = () => {
+      if (row.dataset.dir === 'true') enterDir(row.dataset.name);
+      else downloadEntry(row.dataset.name);
+    };
     row.oncontextmenu = (e) => {
       e.preventDefault();
       const name = row.dataset.name; const isDir = row.dataset.dir === 'true';
@@ -412,6 +415,8 @@ async function testConnection(name) {
 
 async function copySelected() {
   if (!state.selected || state.selected.isDir) { notify('请先选中一个文件', true); return; }
+  const entry = state.entries.find((item) => item.name === state.selected.name);
+  if (entry && entry.size > 200 * 1024 * 1024 && !confirm('文件较大（' + fmtSize(entry.size) + '），复制会先下载到本地缓存，继续？')) return;
   const remotePath = state.active + ':' + (state.path ? state.path + '/' : '') + state.selected.name;
   setStatus('正在准备复制 ' + state.selected.name + ' …');
   try { const local = await api().CopyRemoteToClipboard(remotePath); notify('已复制到剪贴板：' + local); }
@@ -426,10 +431,15 @@ async function pasteInto() {
 }
 
 document.addEventListener('keydown', (e) => {
-  const ctrl = e.ctrlKey || e.metaKey;
-  if (!ctrl) return;
   const tag = (e.target && e.target.tagName) || '';
   if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+  if ((e.key === 'Backspace' || e.key === 'Escape') && state.active && state.path) {
+    e.preventDefault();
+    goUp();
+    return;
+  }
+  const ctrl = e.ctrlKey || e.metaKey;
+  if (!ctrl) return;
   const key = e.key.toLowerCase();
   if (key === 'c' && state.active) { e.preventDefault(); copySelected(); }
   else if (key === 'v' && state.active) { e.preventDefault(); pasteInto(); }

@@ -104,6 +104,8 @@ func apply(section *section, def Definition) {
 			provider = "Minio"
 		} else if isAlibaba(def.Type) {
 			provider = "Alibaba"
+		} else if existing := section.pairs["provider"]; existing != "" {
+			provider = existing
 		}
 		set("provider", provider)
 		set("env_auth", "false")
