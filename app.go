@@ -26,7 +26,7 @@ import (
 	"OssManager/internal/transfer"
 )
 
-const appVersion = "1.1.0"
+const appVersion = "1.2.0"
 
 func logf(format string, args ...interface{}) {
 	_ = os.MkdirAll(config.DataDir(), 0o755)
