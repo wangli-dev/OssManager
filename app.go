@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/rclone/rclone/fs"
@@ -321,6 +322,18 @@ func (a *App) Upload(remoteDir, localFile string) error {
 	return transfer.Upload(a.ctx, a.settings.RcloneConfig, localFile, remoteDir)
 }
 
+// UploadPath 自动判断文件或目录后上传。
+func (a *App) UploadPath(remoteDir, localPath string) error {
+	info, err := os.Stat(localPath)
+	if err != nil {
+		return err
+	}
+	if info.IsDir() {
+		return transfer.UploadFolder(a.ctx, a.settings.RcloneConfig, localPath, remoteDir)
+	}
+	return transfer.Upload(a.ctx, a.settings.RcloneConfig, localPath, remoteDir)
+}
+
 // OpenFolder 用文件管理器打开目录。
 func (a *App) OpenFolder(path string) error {
 	return filemanager.Open(path, a.settings.FileManager)
@@ -370,7 +383,7 @@ type AboutInfo struct {
 // GetAbout 返回版本与路径信息。
 func (a *App) GetAbout() AboutInfo {
 	return AboutInfo{
-		AppVersion:    "1.0.0",
+		AppVersion:    appVersion,
 		RcloneVersion: fs.VersionTag,
 		ConfigPath:    a.settings.RcloneConfig,
 		DataDir:       config.DataDir(),
@@ -478,6 +491,98 @@ func (a *App) PreviewRemote(remotePath string) (string, error) {
 // SetClipboard 写入文本到剪贴板。
 func (a *App) SetClipboard(text string) {
 	runtime.ClipboardSetText(a.ctx, text)
+}
+
+// TextFile 是文本编辑结果。
+type TextFile struct {
+	Text      string `json:"text"`
+	LocalPath string `json:"localPath"`
+}
+
+// ReadObjectText 下载对象并作为文本返回，超过 2MB 拒绝。
+func (a *App) ReadObjectText(remotePath string) (TextFile, error) {
+	local, err := transfer.Download(a.ctx, a.settings.RcloneConfig, remotePath, filepath.Join(config.DataDir(), "edit"))
+	if err != nil {
+		return TextFile{}, err
+	}
+	data, err := os.ReadFile(local)
+	if err != nil {
+		return TextFile{}, err
+	}
+	if len(data) > 2*1024*1024 {
+		return TextFile{}, fmt.Errorf("文件超过 2MB，不适合文本编辑")
+	}
+	return TextFile{Text: string(data), LocalPath: local}, nil
+}
+
+// SaveObjectText 保存文本并上传覆盖原对象。
+func (a *App) SaveObjectText(remotePath, localPath, text string) error {
+	if localPath == "" {
+		return fmt.Errorf("缺少本地临时文件")
+	}
+	if err := os.WriteFile(localPath, []byte(text), 0o644); err != nil {
+		return err
+	}
+	index := strings.LastIndex(remotePath, "/")
+	parent := remotePath
+	if index > 0 {
+		parent = remotePath[:index]
+	}
+	return transfer.Upload(a.ctx, a.settings.RcloneConfig, localPath, parent)
+}
+
+// SetExpiry 设置对象过期天数。
+func (a *App) SetExpiry(remotePath string, days int) error {
+	colon := strings.Index(remotePath, ":")
+	if colon <= 0 {
+		return fmt.Errorf("路径格式应为 连接:桶/对象")
+	}
+	remoteName := remotePath[:colon]
+	rest := strings.TrimPrefix(remotePath[colon+1:], "/")
+	slash := strings.Index(rest, "/")
+	if slash <= 0 || slash == len(rest)-1 {
+		return fmt.Errorf("请选择桶内的文件")
+	}
+	return policy.SetExpiry(a.ctx, a.settings.RcloneConfig, remoteName, rest[:slash], rest[slash+1:], days)
+}
+
+// DownloadBatch 并发下载多个对象。
+func (a *App) DownloadBatch(remotePaths []string, localDir string) (string, error) {
+	if len(remotePaths) == 0 {
+		return "", fmt.Errorf("没有要下载的文件")
+	}
+	limit := a.settings.MaxConcurrentTransfers
+	if limit <= 0 {
+		limit = 4
+	}
+	sem := make(chan struct{}, limit)
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	success, failed := 0, 0
+	var problems []string
+	for _, path := range remotePaths {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(target string) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			_, err := transfer.Download(a.ctx, a.settings.RcloneConfig, target, localDir)
+			mu.Lock()
+			if err != nil {
+				failed++
+				problems = append(problems, filepath.Base(target)+"："+err.Error())
+			} else {
+				success++
+			}
+			mu.Unlock()
+		}(path)
+	}
+	wg.Wait()
+	message := fmt.Sprintf("下载完成：成功 %d 个，失败 %d 个", success, failed)
+	if len(problems) > 0 {
+		message += "；" + strings.Join(problems, "；")
+	}
+	return message, nil
 }
 
 // DownloadFolder 递归下载远程目录。

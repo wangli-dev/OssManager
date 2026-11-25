@@ -18,6 +18,8 @@ export function DeleteConnection(arg1:string):Promise<void>;
 
 export function Download(arg1:string,arg2:string):Promise<string>;
 
+export function DownloadBatch(arg1:Array<string>,arg2:string):Promise<string>;
+
 export function DownloadFolder(arg1:string,arg2:string):Promise<void>;
 
 export function DownloadUpdate(arg1:string):Promise<void>;
@@ -72,15 +74,21 @@ export function PreviewRemote(arg1:string):Promise<string>;
 
 export function PutPolicy(arg1:string,arg2:string,arg3:string):Promise<void>;
 
+export function ReadObjectText(arg1:string):Promise<main.TextFile>;
+
 export function RenameConnection(arg1:string,arg2:string):Promise<void>;
 
 export function SaveConnection(arg1:remote.Definition,arg2:boolean):Promise<void>;
 
 export function SaveConnectionOrder(arg1:Array<string>):Promise<void>;
 
+export function SaveObjectText(arg1:string,arg2:string,arg3:string):Promise<void>;
+
 export function SaveSettings(arg1:config.Settings):Promise<void>;
 
 export function SetClipboard(arg1:string):Promise<void>;
+
+export function SetExpiry(arg1:string,arg2:number):Promise<void>;
 
 export function Size(arg1:string):Promise<string>;
 
@@ -93,3 +101,5 @@ export function UnmountByRemote(arg1:string):Promise<void>;
 export function Upload(arg1:string,arg2:string):Promise<void>;
 
 export function UploadFolder(arg1:string,arg2:string):Promise<void>;
+
+export function UploadPath(arg1:string,arg2:string):Promise<void>;

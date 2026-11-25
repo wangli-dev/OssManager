@@ -2,12 +2,14 @@ package policy
 
 import (
 	"context"
+	"net/url"
 	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 
 	"OssManager/internal/config"
 )
@@ -77,6 +79,21 @@ func GetACL(ctx context.Context, confPath, remote, bucket string) (ACL, error) {
 func CreateBucket(ctx context.Context, confPath, remote, bucket string) error {
 	client := clientFor(confPath, remote)
 	_, err := client.CreateBucket(ctx, &s3.CreateBucketInput{Bucket: aws.String(bucket)})
+	return err
+}
+
+// SetExpiry 通过复制对象自身设置 Expires 头，实现对象过期提示。
+func SetExpiry(ctx context.Context, confPath, remote, bucket, key string, days int) error {
+	client := clientFor(confPath, remote)
+	source := url.PathEscape(bucket + "/" + key)
+	expires := time.Now().AddDate(0, 0, days)
+	_, err := client.CopyObject(ctx, &s3.CopyObjectInput{
+		Bucket:            aws.String(bucket),
+		Key:               aws.String(key),
+		CopySource:        aws.String(source),
+		MetadataDirective: types.MetadataDirectiveReplace,
+		Expires:           aws.Time(expires),
+	})
 	return err
 }
 

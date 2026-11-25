@@ -11,6 +11,7 @@ const state = {
   entries: [],
   editing: null,
   selected: null,
+  multi: new Set(),
 };
 
 let dragName = null;
@@ -81,6 +82,7 @@ function renderShell() {
       <button id="btn-mount">挂载</button>
       <button id="btn-unmount">卸载</button>
       <button id="btn-upload">上传</button>
+      <button id="btn-download">下载</button>
       <button id="btn-import">导入</button>
       <button id="btn-export">导出</button>
       <div class="actions">
@@ -121,8 +123,28 @@ function renderShell() {
     </dialog>
     <dialog id="policy-dialog">
       <h2 id="policy-title">桶策略</h2>
-      <label>策略 JSON</label>
-      <textarea id="policy-text" rows="16"></textarea>
+      <div class="policy-wrap">
+        <div class="policy-left">
+          <label>声明列表</label>
+          <div id="policy-list" class="policy-list"></div>
+          <button id="policy-add">+ 添加声明</button>
+        </div>
+        <div class="policy-right">
+          <label>效果</label>
+          <select id="pd-effect"><option>Allow</option><option>Deny</option></select>
+          <label>被授权者（* 表示所有人，多个用逗号）</label>
+          <input id="pd-principal" />
+          <label>动作（常用可多选）</label>
+          <div id="pd-actions" class="policy-actions"></div>
+          <label>其他动作（逗号分隔，可选）</label>
+          <input id="pd-extra" />
+          <label>资源</label>
+          <input id="pd-resource" />
+          <button id="pd-apply">应用到当前声明</button>
+        </div>
+      </div>
+      <label>策略 JSON 预览</label>
+      <textarea id="policy-text" rows="6" readonly></textarea>
       <label id="policy-acl"></label>
       <div class="footer">
         <button id="policy-cancel">取消</button>
@@ -173,6 +195,14 @@ function renderShell() {
       <div id="info-body" class="about-info"></div>
       <div class="footer"><button id="info-close" class="primary">关闭</button></div>
     </dialog>
+    <dialog id="text-dialog">
+      <h2 id="text-title">编辑文本</h2>
+      <textarea id="text-content" rows="18"></textarea>
+      <div class="footer">
+        <button id="text-cancel">取消</button>
+        <button id="text-save" class="primary">保存</button>
+      </div>
+    </dialog>
     <dialog id="about-dialog">
       <h2>关于</h2>
       <div id="about-info" class="about-info"></div>
@@ -195,6 +225,7 @@ function renderShell() {
   document.getElementById('btn-mount').onclick = mountActive;
   document.getElementById('btn-unmount').onclick = unmountActive;
   document.getElementById('btn-upload').onclick = uploadFile;
+  document.getElementById('btn-download').onclick = downloadSelected;
   document.getElementById('btn-import').onclick = importJson;
   document.getElementById('btn-export').onclick = exportJson;
   document.getElementById('btn-theme').onclick = toggleTheme;
@@ -206,13 +237,17 @@ function renderShell() {
   document.getElementById('mount-ok').onclick = confirmMount;
   document.getElementById('input-cancel').onclick = () => { document.getElementById('input-value').value = ''; document.getElementById('input-dialog').close(); };
   document.getElementById('input-ok').onclick = () => document.getElementById('input-dialog').close();
-  document.getElementById('info-close').onclick = () => document.getElementById('info-dialog').close();  document.getElementById('about-log').onclick = openLog;
+  document.getElementById('info-close').onclick = () => document.getElementById('info-dialog').close();
+  document.getElementById('text-cancel').onclick = () => document.getElementById('text-dialog').close();
+  document.getElementById('text-save').onclick = saveText;  document.getElementById('about-log').onclick = openLog;
   document.getElementById('about-datadir').onclick = () => api().OpenDataDir().catch((err) => toast('打开失败：' + err, true));
   document.getElementById('log-close').onclick = () => document.getElementById('log-dialog').close();
   document.getElementById('edit-cancel').onclick = () => document.getElementById('edit-dialog').close();
   document.getElementById('edit-save').onclick = saveConnection;
   document.getElementById('policy-cancel').onclick = () => document.getElementById('policy-dialog').close();
   document.getElementById('policy-save').onclick = savePolicy;
+  document.getElementById('policy-add').onclick = addStatement;
+  document.getElementById('pd-apply').onclick = applyStatement;
   document.getElementById('settings-cancel').onclick = () => document.getElementById('settings-dialog').close();
   document.getElementById('settings-save').onclick = saveSettings;
 }
@@ -221,6 +256,9 @@ async function boot() {
   renderShell();
   if (window.runtime && window.runtime.EventsOn) {
     window.runtime.EventsOn('mounts-changed', () => { refresh(); });
+  }
+  if (window.runtime && window.runtime.OnFileDrop) {
+    window.runtime.OnFileDrop((x, y, paths) => { uploadPaths(paths); });
   }
   try {
     state.settings = await api().GetSettings();
@@ -302,7 +340,8 @@ function renderConnections() {
 }
 
 async function selectConnection(name) {
-  state.active = name; state.path = ''; renderConnections(); await loadEntries();
+  state.active = name; state.path = ''; state.selected = null; state.multi.clear(); state.entries = [];
+  renderConnections(); await loadEntries();
 }
 
 async function loadEntries() {
@@ -346,15 +385,21 @@ function renderEntries() {
   crumbs.innerHTML = `<a href="#" id="go-up">↑ 上级</a><span class="trail">${trail}</span><span class="abs" title="${esc(absPath)}">${esc(absPath)}</span>`;
   document.getElementById('go-up').onclick = (e) => { e.preventDefault(); goUp(); };
   crumbs.querySelectorAll('a[data-path]').forEach((link) => {
-    link.onclick = (e) => { e.preventDefault(); state.path = link.dataset.path; loadEntries(); };
+    link.onclick = (e) => { e.preventDefault(); state.path = link.dataset.path; state.selected = null; loadEntries(); };
   });
+  const absEl = crumbs.querySelector('.abs');
+  if (absEl && absPath) {
+    absEl.style.cursor = 'pointer';
+    absEl.title = '点击复制绝对路径';
+    absEl.onclick = () => { api().SetClipboard(absPath); notify('已复制绝对路径：' + absPath); };
+  }
 
   const host = document.getElementById('entries');
   if (!state.entries.length) { host.innerHTML = '<div class="empty">此位置没有对象</div>'; return; }
   const rows = state.entries.map((en) => {
     const ops = en.isDir
-      ? '<button data-op="enter">进入</button><button data-op="size">统计</button>'
-      : '<button data-op="preview">预览</button><button data-op="download">下载</button><button data-op="info">属性</button><button data-op="link">链接</button>';
+      ? '<button data-op="enter" title="进入">📂</button><button data-op="size" title="统计占用">📊</button>'
+      : '<button data-op="preview" title="预览">👁</button><button data-op="download" title="下载">⬇</button><button data-op="info" title="属性">ℹ</button><button data-op="link" title="复制下载链接">🔗</button>';
     const cls = en.isDir ? 'dir' : 'file';
     const icon = en.isDir ? '📁' : '📄';
     const size = en.isDir ? '' : fmtSize(en.size);
@@ -367,10 +412,19 @@ function renderEntries() {
   }).join('');
   host.innerHTML = `<table><thead><tr><th>名称</th><th class="size">大小</th><th class="time">修改时间</th><th class="ops">操作</th></tr></thead><tbody>${rows}</tbody></table>`;
   host.querySelectorAll('tr.row').forEach((row) => {
-    row.onclick = () => {
-      host.querySelectorAll('tr.selected').forEach((item) => item.classList.remove('selected'));
-      row.classList.add('selected');
-      state.selected = { name: row.dataset.name, isDir: row.dataset.dir === 'true' };
+    row.onclick = (e) => {
+      const name = row.dataset.name;
+      if (e.ctrlKey || e.metaKey) {
+        if (state.multi.has(name)) state.multi.delete(name);
+        else state.multi.add(name);
+      } else {
+        state.multi.clear();
+        state.multi.add(name);
+      }
+      host.querySelectorAll('tr.row').forEach((item) => item.classList.toggle('selected', state.multi.has(item.dataset.name)));
+      state.selected = state.multi.has(name)
+        ? { name, isDir: row.dataset.dir === 'true', path: state.active + ':' + (state.path ? state.path + '/' : '') + name }
+        : null;
     };
     row.querySelectorAll('button[data-op]').forEach((button) => {
       button.onclick = (e) => {
@@ -407,8 +461,10 @@ function renderEntries() {
       } else {
         items.push({ label: '预览', action: () => previewEntry(remotePath) });
         items.push({ label: '下载…', action: () => downloadEntry(name) });
+        items.push({ label: '编辑文本…', action: () => editText(remotePath) });
         items.push({ label: '复制下载链接（7 天）', action: () => copyLink(remotePath) });
         items.push({ label: '对象属性…', action: () => showInfo(remotePath) });
+        items.push({ label: '设置过期…', action: () => setExpiry(remotePath) });
       }
       items.push({ label: '复制路径', action: () => copyPath(remotePath, true) });
       items.push({ label: '复制 rclone 路径', action: () => copyPath(remotePath, false) });
@@ -423,8 +479,8 @@ function renderEntries() {
   });
 }
 
-function enterDir(name) { state.path = state.path ? state.path + '/' + name : name; loadEntries(); }
-function goUp() { const p = state.path.split('/').filter(Boolean); p.pop(); state.path = p.join('/'); loadEntries(); }
+function enterDir(name) { state.selected = null; state.multi.clear(); state.path = state.path ? state.path + '/' + name : name; loadEntries(); }
+function goUp() { state.selected = null; state.multi.clear(); const p = state.path.split('/').filter(Boolean); p.pop(); state.path = p.join('/'); loadEntries(); }
 
 async function mountActive() {
   if (!state.active) { notify('请先选择连接', true); return; }
@@ -517,7 +573,7 @@ async function copySelected() {
   if (!state.selected || state.selected.isDir) { notify('请先选中一个文件', true); return; }
   const entry = state.entries.find((item) => item.name === state.selected.name);
   if (entry && entry.size > 200 * 1024 * 1024 && !confirm('文件较大（' + fmtSize(entry.size) + '），复制会先下载到本地缓存，继续？')) return;
-  const remotePath = state.active + ':' + (state.path ? state.path + '/' : '') + state.selected.name;
+  const remotePath = state.selected.path;
   setStatus('正在准备复制 ' + state.selected.name + ' …');
   try { const local = await api().CopyRemoteToClipboard(remotePath); notify('已复制到剪贴板：' + local); }
   catch (err) { notify('复制失败：' + err, true); }
@@ -659,6 +715,52 @@ async function uploadFolder() {
   catch (err) { notify('上传失败：' + err, true); }
 }
 
+let editingText = null;
+
+async function editText(remotePath) {
+  try {
+    const file = await api().ReadObjectText(remotePath);
+    editingText = { remotePath, localPath: file.localPath };
+    document.getElementById('text-title').textContent = '编辑文本：' + remotePath.split('/').pop();
+    document.getElementById('text-content').value = file.text;
+    document.getElementById('text-dialog').showModal();
+  } catch (err) { notify('打开失败：' + err, true); }
+}
+
+async function saveText() {
+  if (!editingText) return;
+  try {
+    await api().SaveObjectText(editingText.remotePath, editingText.localPath, document.getElementById('text-content').value);
+    document.getElementById('text-dialog').close();
+    await loadEntries();
+    notify('已保存');
+  } catch (err) { notify('保存失败：' + err, true); }
+}
+
+async function setExpiry(remotePath) {
+  const days = await askInput('过期天数（例如 7）', '7');
+  const value = parseInt(days, 10);
+  if (!value || value <= 0) return;
+  try { await api().SetExpiry(remotePath, value); notify('已设置 ' + value + ' 天过期'); }
+  catch (err) { notify('设置过期失败：' + err, true); }
+}
+
+async function downloadSelected() {
+  if (!state.active) { notify('请先选择连接', true); return; }
+  const names = [...state.multi].filter((name) => {
+    const entry = state.entries.find((item) => item.name === name);
+    return entry && !entry.isDir;
+  });
+  if (!names.length) { notify('请先选择文件', true); return; }
+  const dir = await api().PickFolder();
+  if (!dir) return;
+  const base = state.active + ':' + (state.path ? state.path + '/' : '');
+  const paths = names.map((name) => base + name);
+  setStatus('正在下载 ' + paths.length + ' 个文件…');
+  try { const message = await api().DownloadBatch(paths, dir); notify(message); }
+  catch (err) { notify('下载失败：' + err, true); }
+}
+
 async function downloadEntry(name) {
   const dir = await api().PickFolder();
   if (!dir) return;
@@ -666,6 +768,18 @@ async function downloadEntry(name) {
   setStatus('正在下载 ' + name + ' …');
   try { const local = await api().Download(remotePath, dir); notify('已下载到 ' + local); }
   catch (err) { setStatus('下载失败：' + err, true); }
+}
+
+async function uploadPaths(paths) {
+  if (!state.active) { notify('请先选择连接', true); return; }
+  const remoteDir = state.active + ':' + state.path;
+  let ok = 0, fail = 0;
+  for (const path of paths) {
+    try { await api().UploadPath(remoteDir, path); ok++; }
+    catch (err) { fail++; }
+  }
+  await loadEntries();
+  notify(`上传完成：成功 ${ok}，失败 ${fail}`, fail > 0);
 }
 
 async function uploadFile() {
@@ -678,26 +792,139 @@ async function uploadFile() {
   catch (err) { setStatus('上传失败：' + err, true); }
 }
 
+const COMMON_ACTIONS = [
+  ['s3:GetObject', '读取对象'],
+  ['s3:PutObject', '写入对象'],
+  ['s3:DeleteObject', '删除对象'],
+  ['s3:ListBucket', '列出桶'],
+  ['s3:GetBucketLocation', '获取位置'],
+  ['s3:ListBucketMultipartUploads', '列出分片'],
+];
+
+const policy = { bucket: '', statements: [], index: -1 };
+
+function principalText(value) {
+  if (!value) return '*';
+  if (value === '*') return '*';
+  if (value.AWS) return Array.isArray(value.AWS) ? value.AWS.join(',') : String(value.AWS);
+  return JSON.stringify(value);
+}
+
+function parsePolicy(text) {
+  try {
+    const doc = JSON.parse(text || '{}');
+    const list = Array.isArray(doc.Statement) ? doc.Statement : (doc.Statement ? [doc.Statement] : []);
+    return list.map((item) => ({
+      effect: item.Effect || 'Allow',
+      principal: principalText(item.Principal),
+      actions: Array.isArray(item.Action) ? item.Action : (item.Action ? [item.Action] : []),
+      resource: Array.isArray(item.Resource) ? item.Resource[0] || '' : (item.Resource || ''),
+    }));
+  } catch (err) {
+    return [];
+  }
+}
+
+function buildPolicy() {
+  const statements = policy.statements.map((item) => ({
+    Effect: item.effect,
+    Principal: item.principal === '*' ? '*' : { AWS: item.principal.split(',').map((x) => x.trim()).filter(Boolean) },
+    Action: item.actions,
+    Resource: item.resource ? [item.resource] : [],
+  }));
+  return JSON.stringify({ Version: '2012-10-17', Statement: statements }, null, 2);
+}
+
+function renderPolicyActions(selected) {
+  const host = document.getElementById('pd-actions');
+  host.innerHTML = COMMON_ACTIONS.map(([value, label]) =>
+    `<label class="chk"><input type="checkbox" value="${value}" ${selected.includes(value) ? 'checked' : ''}/>${label}</label>`).join('');
+}
+
+function renderPolicy() {
+  const list = document.getElementById('policy-list');
+  list.innerHTML = policy.statements.length
+    ? policy.statements.map((item, index) => `<div class="stmt ${index === policy.index ? 'active' : ''}" data-i="${index}">
+        <b>${esc(item.effect)}</b> ${esc(item.principal)}
+        <small>${esc(item.actions.join(', '))}</small>
+        <span class="del" data-del="${index}">✕</span></div>`).join('')
+    : '<div class="empty">没有声明</div>';
+  list.querySelectorAll('.stmt').forEach((node) => {
+    node.onclick = (e) => {
+      if (e.target.dataset.del !== undefined) return;
+      policy.index = Number(node.dataset.i);
+      renderPolicy();
+    };
+  });
+  list.querySelectorAll('.del').forEach((node) => {
+    node.onclick = (e) => {
+      e.stopPropagation();
+      policy.statements.splice(Number(node.dataset.del), 1);
+      if (policy.index >= policy.statements.length) policy.index = policy.statements.length - 1;
+      renderPolicy();
+    };
+  });
+  const item = policy.statements[policy.index];
+  if (item) {
+    document.getElementById('pd-effect').value = item.effect;
+    document.getElementById('pd-principal').value = item.principal;
+    document.getElementById('pd-resource').value = item.resource;
+    const extra = item.actions.filter((action) => !COMMON_ACTIONS.some(([value]) => value === action));
+    document.getElementById('pd-extra').value = extra.join(',');
+    renderPolicyActions(item.actions);
+  } else {
+    renderPolicyActions([]);
+  }
+  document.getElementById('policy-text').value = buildPolicy();
+}
+
+function addStatement() {
+  policy.statements.push({
+    effect: 'Allow',
+    principal: '*',
+    actions: ['s3:GetObject'],
+    resource: 'arn:aws:s3:::' + (policy.bucket || 'bucket') + '/*',
+  });
+  policy.index = policy.statements.length - 1;
+  renderPolicy();
+}
+
+function applyStatement() {
+  if (policy.index < 0 || !policy.statements[policy.index]) { notify('请先添加或选择一条声明', true); return; }
+  const actions = Array.from(document.querySelectorAll('#pd-actions input:checked')).map((node) => node.value);
+  const extra = document.getElementById('pd-extra').value.split(',').map((x) => x.trim()).filter(Boolean);
+  policy.statements[policy.index] = {
+    effect: document.getElementById('pd-effect').value,
+    principal: document.getElementById('pd-principal').value.trim() || '*',
+    actions: Array.from(new Set(actions.concat(extra))),
+    resource: document.getElementById('pd-resource').value.trim(),
+  };
+  renderPolicy();
+}
+
 async function openPolicy(bucket) {
+  policy.bucket = bucket;
+  policy.statements = [];
+  policy.index = -1;
   document.getElementById('policy-title').textContent = '桶策略：' + bucket;
-  document.getElementById('policy-text').value = '';
   document.getElementById('policy-acl').textContent = '';
-  document.getElementById('policy-dialog').showModal();
   try {
     const text = await api().GetPolicy(state.active, bucket);
-    document.getElementById('policy-text').value = text || '';
+    policy.statements = parsePolicy(text);
+    if (policy.statements.length) policy.index = 0;
     const acl = await api().GetACL(state.active, bucket);
     document.getElementById('policy-acl').textContent = '所有者：' + (acl.owner || '未知') + '；授权条目：' + (acl.grants ? acl.grants.length : 0);
-  } catch (err) { setStatus('读取策略失败：' + err, true); }
+  } catch (err) { notify('读取策略失败：' + err, true); }
+  renderPolicy();
+  document.getElementById('policy-dialog').showModal();
 }
 
 async function savePolicy() {
-  const bucket = document.getElementById('policy-title').textContent.replace('桶策略：', '');
   try {
-    await api().PutPolicy(state.active, bucket, document.getElementById('policy-text').value);
+    await api().PutPolicy(state.active, policy.bucket, buildPolicy());
     document.getElementById('policy-dialog').close();
-    setStatus('策略已保存');
-  } catch (err) { setStatus('保存策略失败：' + err, true); }
+    notify('策略已保存');
+  } catch (err) { notify('保存策略失败：' + err, true); }
 }
 
 async function exportJson() {

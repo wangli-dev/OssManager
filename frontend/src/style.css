@@ -184,8 +184,8 @@ dialog .footer { display: flex; justify-content: flex-end; gap: 8px; margin-top:
 .crumbs .trail a:hover { background: var(--accent-soft); }
 .crumbs .abs { margin-left: auto; color: var(--muted); font-size: 12px; max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-td.ops, th.ops { width: 220px; white-space: nowrap; }
-td.ops button { padding: 2px 8px; font-size: 12px; margin-right: 4px; }
+td.ops, th.ops { width: 150px; white-space: nowrap; }
+td.ops button { padding: 2px 7px; font-size: 13px; margin-right: 4px; line-height: 20px; }
 
 .toast {
   position: fixed;
@@ -247,3 +247,15 @@ dialog label + input { margin-bottom: 2px; }
 body.dark ::-webkit-scrollbar-track { background: #2a2a2c; }
 body.dark ::-webkit-scrollbar-thumb { background: #4a4a52; }
 body.dark ::-webkit-scrollbar-thumb:hover { background: #5c5c66; }
+
+/* 策略可视化编辑器 */
+.policy-wrap { display: flex; gap: 14px; }
+.policy-left { width: 260px; }
+.policy-list { max-height: 260px; overflow: auto; border: 1px solid var(--border); border-radius: 6px; padding: 6px; margin-bottom: 8px; }
+.policy-list .stmt { padding: 6px 20px 6px 6px; border-radius: 5px; cursor: pointer; font-size: 12px; border-bottom: 1px solid var(--border); position: relative; }
+.policy-list .stmt.active { background: var(--selection); }
+.policy-list .stmt .del { position: absolute; right: 6px; top: 6px; color: var(--danger); cursor: pointer; }
+.policy-list .stmt small { display: block; color: var(--muted); margin-top: 2px; word-break: break-all; }
+.policy-right { flex: 1; }
+.policy-actions { display: flex; flex-wrap: wrap; gap: 6px 12px; }
+.policy-actions label.chk { display: inline-flex; align-items: center; gap: 4px; width: auto; margin: 0; font-size: 12px; }

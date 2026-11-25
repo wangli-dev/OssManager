@@ -73,6 +73,20 @@ export namespace main {
 	        this.logPath = source["logPath"];
 	    }
 	}
+	export class TextFile {
+	    text: string;
+	    localPath: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new TextFile(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.text = source["text"];
+	        this.localPath = source["localPath"];
+	    }
+	}
 	export class UpdateInfo {
 	    current: string;
 	    latest: string;

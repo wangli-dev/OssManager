@@ -26,6 +26,10 @@ export function Download(arg1, arg2) {
   return window['go']['main']['App']['Download'](arg1, arg2);
 }
 
+export function DownloadBatch(arg1, arg2) {
+  return window['go']['main']['App']['DownloadBatch'](arg1, arg2);
+}
+
 export function DownloadFolder(arg1, arg2) {
   return window['go']['main']['App']['DownloadFolder'](arg1, arg2);
 }
@@ -134,6 +138,10 @@ export function PutPolicy(arg1, arg2, arg3) {
   return window['go']['main']['App']['PutPolicy'](arg1, arg2, arg3);
 }
 
+export function ReadObjectText(arg1) {
+  return window['go']['main']['App']['ReadObjectText'](arg1);
+}
+
 export function RenameConnection(arg1, arg2) {
   return window['go']['main']['App']['RenameConnection'](arg1, arg2);
 }
@@ -146,12 +154,20 @@ export function SaveConnectionOrder(arg1) {
   return window['go']['main']['App']['SaveConnectionOrder'](arg1);
 }
 
+export function SaveObjectText(arg1, arg2, arg3) {
+  return window['go']['main']['App']['SaveObjectText'](arg1, arg2, arg3);
+}
+
 export function SaveSettings(arg1) {
   return window['go']['main']['App']['SaveSettings'](arg1);
 }
 
 export function SetClipboard(arg1) {
   return window['go']['main']['App']['SetClipboard'](arg1);
+}
+
+export function SetExpiry(arg1, arg2) {
+  return window['go']['main']['App']['SetExpiry'](arg1, arg2);
 }
 
 export function Size(arg1) {
@@ -176,4 +192,8 @@ export function Upload(arg1, arg2) {
 
 export function UploadFolder(arg1, arg2) {
   return window['go']['main']['App']['UploadFolder'](arg1, arg2);
+}
+
+export function UploadPath(arg1, arg2) {
+  return window['go']['main']['App']['UploadPath'](arg1, arg2);
 }
