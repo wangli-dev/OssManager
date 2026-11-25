@@ -36,7 +36,7 @@ export function ListConnections():Promise<Array<config.Connection>>;
 
 export function ListMounts():Promise<Record<string, string>>;
 
-export function Mount(arg1:string,arg2:string):Promise<void>;
+export function Mount(arg1:string,arg2:string,arg3:string):Promise<void>;
 
 export function OpenDataDir():Promise<void>;
 

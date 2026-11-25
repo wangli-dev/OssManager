@@ -76,6 +76,7 @@ document.addEventListener('click', (e) => { if (menuEl && !menuEl.contains(e.tar
 function renderShell() {
   app.innerHTML = `
     <header>
+      <button id="btn-new" class="primary">新建</button>
       <button id="btn-refresh">刷新</button>
       <button id="btn-mount">挂载</button>
       <button id="btn-unmount">卸载</button>
@@ -146,6 +147,17 @@ function renderShell() {
         <button id="settings-save" class="primary">保存</button>
       </div>
     </dialog>
+    <dialog id="mount-dialog">
+      <h2>挂载连接</h2>
+      <label>盘符</label>
+      <select id="mount-drive"></select>
+      <label>挂载名称（资源管理器中显示的卷标）</label>
+      <input id="mount-volume" />
+      <div class="footer">
+        <button id="mount-cancel">取消</button>
+        <button id="mount-ok" class="primary">挂载</button>
+      </div>
+    </dialog>
     <dialog id="about-dialog">
       <h2>关于</h2>
       <div id="about-info" class="about-info"></div>
@@ -162,6 +174,7 @@ function renderShell() {
     </dialog>
   `;
   statusEl = document.getElementById('status');
+  document.getElementById('btn-new').onclick = () => openEdit(null);
   document.getElementById('btn-refresh').onclick = refresh;
   document.getElementById('btn-mount').onclick = mountActive;
   document.getElementById('btn-unmount').onclick = unmountActive;
@@ -172,7 +185,8 @@ function renderShell() {
   document.getElementById('btn-about').onclick = openAbout;
   document.getElementById('btn-settings').onclick = openSettings;
   document.getElementById('about-close').onclick = () => document.getElementById('about-dialog').close();
-  document.getElementById('about-log').onclick = openLog;
+  document.getElementById('mount-cancel').onclick = () => document.getElementById('mount-dialog').close();
+  document.getElementById('mount-ok').onclick = confirmMount;  document.getElementById('about-log').onclick = openLog;
   document.getElementById('about-datadir').onclick = () => api().OpenDataDir().catch((err) => toast('打开失败：' + err, true));
   document.getElementById('log-close').onclick = () => document.getElementById('log-dialog').close();
   document.getElementById('edit-cancel').onclick = () => document.getElementById('edit-dialog').close();
@@ -185,6 +199,9 @@ function renderShell() {
 
 async function boot() {
   renderShell();
+  if (window.runtime && window.runtime.EventsOn) {
+    window.runtime.EventsOn('mounts-changed', () => { refresh(); });
+  }
   try {
     state.settings = await api().GetSettings();
     applyTheme();
@@ -210,7 +227,8 @@ async function refresh() {
 }
 
 function mountDriveOf(remote) {
-  return Object.keys(state.mounts).find((d) => state.mounts[d] === remote + ':') || '';
+  const target = String(remote || '').replace(/:$/, '');
+  return Object.keys(state.mounts).find((drive) => String(state.mounts[drive] || '').replace(/:$/, '') === target) || '';
 }
 
 function renderConnections() {
@@ -218,11 +236,10 @@ function renderConnections() {
   if (!state.connections.length) { host.innerHTML = '<div class="empty">没有连接</div>'; return; }
   host.innerHTML = state.connections.map((c) => {
     const drive = mountDriveOf(c.name);
-    const badge = drive
-      ? `<span class="badge mounted">${esc(drive)} 已挂载</span>`
-      : `<span class="badge">${esc(c.type || '未挂载')}</span>`;
+    const driveBadge = drive ? `<span class="badge mounted">${esc(drive)}</span>` : '';
     return `<div class="conn${state.active === c.name ? ' active' : ''}" data-name="${esc(c.name)}">
-      <span class="name" title="${esc(c.displayName)}">${esc(c.displayName)}</span>${badge}</div>`;
+      <span class="title"><span class="name" title="${esc(c.displayName)}">${esc(c.displayName)}</span><span class="badge type">${esc(c.type || '')}</span></span>
+      ${driveBadge}</div>`;
   }).join('');
   host.querySelectorAll('.conn').forEach((node) => {
     node.onclick = () => selectConnection(node.dataset.name);
@@ -338,13 +355,24 @@ function enterDir(name) { state.path = state.path ? state.path + '/' + name : na
 function goUp() { const p = state.path.split('/').filter(Boolean); p.pop(); state.path = p.join('/'); loadEntries(); }
 
 async function mountActive() {
-  if (!state.active) { setStatus('请先选择连接', true); return; }
+  if (!state.active) { notify('请先选择连接', true); return; }
   const drives = (await api().FreeDrives()) || [];
-  if (!drives.length) { setStatus('没有可用盘符', true); return; }
-  const drive = drives[0];
+  if (!drives.length) { notify('没有可用盘符', true); return; }
+  const select = document.getElementById('mount-drive');
+  select.innerHTML = drives.map((drive) => `<option value="${esc(drive)}">${esc(drive)}</option>`).join('');
+  const connection = state.connections.find((item) => item.name === state.active);
+  document.getElementById('mount-volume').value = connection ? connection.displayName : state.active;
+  document.getElementById('mount-dialog').showModal();
+}
+
+async function confirmMount() {
+  const drive = document.getElementById('mount-drive').value;
+  const volume = document.getElementById('mount-volume').value.trim();
+  if (!drive) return;
+  document.getElementById('mount-dialog').close();
   setStatus('正在挂载 ' + state.active + ' → ' + drive + ' …');
-  try { await api().Mount(state.active, drive); await refresh(); notify('已挂载到 ' + drive); }
-  catch (err) { setStatus('挂载失败：' + err, true); }
+  try { await api().Mount(state.active, drive, volume); await refresh(); notify('已挂载到 ' + drive); }
+  catch (err) { notify('挂载失败：' + err, true); }
 }
 
 async function unmountActive() {

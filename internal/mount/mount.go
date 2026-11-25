@@ -89,7 +89,11 @@ func (m *Manager) Mount(ctx context.Context, confPath, remote, drive string, opt
 	mountOpt := mountlib.Opt
 	mfs := cmount.NewFS(v, &mountOpt)
 	host := fuse.NewFileSystemHost(mfs)
-	go func() { host.Mount(drive, []string{}) }()
+	flags := []string{}
+	if opts.VolumeName != "" {
+		flags = []string{"-o", "volname=" + opts.VolumeName}
+	}
+	go func() { host.Mount(drive, flags) }()
 
 	deadline := time.Now().Add(15 * time.Second)
 	for time.Now().Before(deadline) {

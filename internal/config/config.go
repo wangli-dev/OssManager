@@ -66,7 +66,6 @@ func LoadSettings() Settings {
 				if legacy.Theme != "" {
 					value.Theme = legacy.Theme
 				}
-				value.CacheDirectory = legacy.CacheDirectory
 				value.DirCacheTime = legacy.DirCacheTime
 				value.VfsCacheMaxSize = legacy.VfsCacheMaxSize
 				value.VfsCacheMaxAge = legacy.VfsCacheMaxAge
@@ -81,7 +80,19 @@ func LoadSettings() Settings {
 	if value.Theme != "dark" {
 		value.Theme = "light"
 	}
+	if strings.TrimSpace(value.CacheDirectory) == "" {
+		value.CacheDirectory = executableDir()
+	}
 	return value
+}
+
+// executableDir 返回当前程序所在目录，作为默认缓存目录。
+func executableDir() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	return filepath.Dir(exe)
 }
 
 // SaveSettings 原子保存设置。

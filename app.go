@@ -63,22 +63,30 @@ func (a *App) mountOptions() mount.Options {
 
 func (a *App) restoreMounts() {
 	time.Sleep(3 * time.Second)
+	seen := make(map[string]bool)
 	for _, record := range config.ReadMountRecords() {
+		remote := strings.TrimSuffix(record.Remote, ":") + ":"
+		if seen[remote] {
+			continue
+		}
+		seen[remote] = true
 		if _, err := os.Stat(record.Drive + `\`); err == nil {
 			continue
 		}
-		if err := a.mounter.Mount(a.ctx, a.settings.RcloneConfig, record.Remote, record.Drive, a.mountOptions()); err != nil {
-			logf("restore mount %s %s err=%v", record.Remote, record.Drive, err)
+		if err := a.mounter.Mount(a.ctx, a.settings.RcloneConfig, remote, record.Drive, a.mountOptions()); err != nil {
+			logf("restore mount %s %s err=%v", remote, record.Drive, err)
 		} else {
-			logf("restore mount %s %s ok", record.Remote, record.Drive)
+			logf("restore mount %s %s ok", remote, record.Drive)
 		}
 	}
+	runtime.EventsEmit(a.ctx, "mounts-changed")
 }
 
 func (a *App) addMountRecord(remote, drive string) {
+	remote = strings.TrimSuffix(remote, ":") + ":"
 	records := config.ReadMountRecords()
 	for _, record := range records {
-		if strings.EqualFold(record.Drive, drive) && record.Remote == remote {
+		if strings.EqualFold(record.Drive, drive) && strings.TrimSuffix(record.Remote, ":")+":" == remote {
 			return
 		}
 	}
@@ -158,13 +166,17 @@ func (a *App) List(remote string) ([]rclonefs.Entry, error) {
 	return rclonefs.List(a.ctx, a.settings.RcloneConfig, remote)
 }
 
-// Mount 把连接挂载到盘符。
-func (a *App) Mount(remote, drive string) error {
-	logf("Mount remote=%s drive=%s", remote, drive)
-	err := a.mounter.Mount(a.ctx, a.settings.RcloneConfig, remote, drive, a.mountOptions())
+// Mount 把连接挂载到盘符，volumeName 为空时使用连接显示名。
+func (a *App) Mount(remote, drive, volumeName string) error {
+	remote = strings.TrimSuffix(remote, ":") + ":"
+	logf("Mount remote=%s drive=%s volume=%s", remote, drive, volumeName)
+	options := a.mountOptions()
+	options.VolumeName = volumeName
+	err := a.mounter.Mount(a.ctx, a.settings.RcloneConfig, remote, drive, options)
 	logf("Mount result err=%v", err)
 	if err == nil {
 		a.addMountRecord(remote, drive)
+		runtime.EventsEmit(a.ctx, "mounts-changed")
 	}
 	return err
 }
@@ -179,10 +191,10 @@ func (a *App) Unmount(drive string) error {
 
 // UnmountByRemote 按连接名卸载其所有挂载，避免前端挂载表不同步。
 func (a *App) UnmountByRemote(remoteName string) error {
-	target := remoteName + ":"
+	target := strings.TrimSuffix(remoteName, ":") + ":"
 	found := false
 	for drive, remote := range a.mounter.List() {
-		if remote != target {
+		if strings.TrimSuffix(remote, ":")+":" != target {
 			continue
 		}
 		found = true
@@ -194,6 +206,7 @@ func (a *App) UnmountByRemote(remoteName string) error {
 		return fmt.Errorf("%s 没有挂载", remoteName)
 	}
 	a.removeMountRecord(target)
+	runtime.EventsEmit(a.ctx, "mounts-changed")
 	return nil
 }
 

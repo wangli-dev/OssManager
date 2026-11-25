@@ -81,15 +81,19 @@ aside .list-title { padding: 8px 12px; color: var(--muted); font-size: 12px; }
   border-bottom: 1px solid var(--border);
   cursor: pointer;
   display: flex;
-  justify-content: space-between;
+  align-items: center;
   gap: 8px;
 }
 
 .conn:hover { background: var(--accent-soft); }
 .conn.active { background: var(--selection); }
+.conn .title { display: flex; gap: 6px; align-items: center; overflow: hidden; flex: 1; }
 .conn .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.conn .meta { display: flex; gap: 6px; align-items: center; justify-content: flex-end; }
 .conn .badge { color: var(--muted); font-size: 12px; white-space: nowrap; }
-.conn .badge.mounted { color: #1e8e3e; }
+.conn .badge.type { font-size: 11px; background: var(--accent-soft); padding: 1px 6px; border-radius: 4px; }
+.conn .badge.mounted { color: #1e8e3e; margin-left: auto; }
+body.dark .conn .badge.mounted { color: #4ade80; }
 
 section.files {
   flex: 1;

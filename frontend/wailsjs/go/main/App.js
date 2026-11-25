@@ -62,8 +62,8 @@ export function ListMounts() {
   return window['go']['main']['App']['ListMounts']();
 }
 
-export function Mount(arg1, arg2) {
-  return window['go']['main']['App']['Mount'](arg1, arg2);
+export function Mount(arg1, arg2, arg3) {
+  return window['go']['main']['App']['Mount'](arg1, arg2, arg3);
 }
 
 export function OpenDataDir() {

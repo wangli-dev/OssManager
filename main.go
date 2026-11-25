@@ -7,7 +7,6 @@ import (
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
-	"golang.org/x/sys/windows"
 
 	"OssManager/internal/singleinstance"
 )
@@ -26,7 +25,7 @@ func main() {
 		return
 	}
 	if !acquired {
-		windows.MessageBox(0, windows.StringToUTF16Ptr("RcloneOssManager 已经在运行。"), windows.StringToUTF16Ptr("提示"), windows.MB_OK|windows.MB_ICONINFORMATION)
+		singleinstance.Activate("OssManager")
 		return
 	}
 	app := NewApp()
