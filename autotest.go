@@ -1,0 +1,51 @@
+package main
+
+import (
+	"context"
+	"os"
+
+	"OssManager/internal/config"
+	"OssManager/internal/mount"
+	"OssManager/internal/policy"
+	"OssManager/internal/rclonefs"
+)
+
+func driveExists(drive string) bool {
+	_, err := os.Stat(drive + `\`)
+	return err == nil
+}
+
+// runAutotest 是开发期自检：不使用界面，直接验证连接、浏览、策略、挂载与卸载。
+func runAutotest() {
+	settings := config.LoadSettings()
+	ctx := context.Background()
+	logf("autotest start conf=%s", settings.RcloneConfig)
+	connections, err := config.ListConnections(settings.RcloneConfig)
+	if err != nil {
+		logf("autotest list connections err=%v", err)
+		return
+	}
+	logf("autotest connections=%d", len(connections))
+	if len(connections) == 0 {
+		return
+	}
+	name := connections[0].Name
+	entries, err := rclonefs.List(ctx, settings.RcloneConfig, name+":")
+	logf("autotest list %s entries=%d err=%v", name, len(entries), err)
+	if len(entries) > 0 {
+		bucket := entries[0].Name
+		text, err := policy.Get(ctx, settings.RcloneConfig, name, bucket)
+		logf("autotest policy %s bytes=%d err=%v", bucket, len(text), err)
+	}
+	manager := mount.NewManager()
+	if err := manager.Mount(ctx, settings.RcloneConfig, name+":", "Z:", mount.Options{}); err != nil {
+		logf("autotest mount err=%v", err)
+		return
+	}
+	logf("autotest mount ok Z=%v", driveExists("Z:"))
+	if err := manager.Unmount("Z:"); err != nil {
+		logf("autotest unmount err=%v", err)
+	} else {
+		logf("autotest unmount ok Z=%v", driveExists("Z:"))
+	}
+}

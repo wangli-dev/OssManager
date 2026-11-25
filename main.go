@@ -1,0 +1,51 @@
+package main
+
+import (
+	"embed"
+	"os"
+
+	"github.com/wailsapp/wails/v2"
+	"github.com/wailsapp/wails/v2/pkg/options"
+	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
+	"golang.org/x/sys/windows"
+
+	"OssManager/internal/singleinstance"
+)
+
+//go:embed all:frontend/dist
+var assets embed.FS
+
+func main() {
+	if len(os.Args) > 1 && os.Args[1] == "--autotest" {
+		runAutotest()
+		return
+	}
+	acquired, err := singleinstance.Acquire("OssManager")
+	if err != nil {
+		println("Error:", err.Error())
+		return
+	}
+	if !acquired {
+		windows.MessageBox(0, windows.StringToUTF16Ptr("RcloneOssManager 已经在运行。"), windows.StringToUTF16Ptr("提示"), windows.MB_OK|windows.MB_ICONINFORMATION)
+		return
+	}
+	app := NewApp()
+
+	err = wails.Run(&options.App{
+		Title:  "OssManager",
+		Width:  1120,
+		Height: 760,
+		AssetServer: &assetserver.Options{
+			Assets: assets,
+		},
+		BackgroundColour: &options.RGBA{R: 27, G: 38, B: 54, A: 1},
+		OnStartup:        app.startup,
+		Bind: []interface{}{
+			app,
+		},
+	})
+
+	if err != nil {
+		println("Error:", err.Error())
+	}
+}
