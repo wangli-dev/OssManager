@@ -24,6 +24,7 @@ import (
 	"OssManager/internal/policy"
 	"OssManager/internal/rclonefs"
 	"OssManager/internal/remote"
+	"OssManager/internal/shelldrag"
 	"OssManager/internal/transfer"
 )
 
@@ -299,6 +300,33 @@ func (a *App) TestConnection(name string) error {
 // Download 下载远程对象到本地目录。
 func (a *App) Download(remotePath, localDir string) (string, error) {
 	return transfer.Download(a.ctx, a.settings.RcloneConfig, remotePath, localDir)
+}
+
+// DragOutFiles 把远程文件下载到缓存后发起系统拖拽：用户按住鼠标拖到资源管理器即落盘复制。
+// 阻塞直到拖拽结束；前端应在按住鼠标的 dragstart 中调用，并保持鼠标按下直到提示就绪。
+func (a *App) DragOutFiles(remotePaths []string) (string, error) {
+	if len(remotePaths) == 0 {
+		return "", fmt.Errorf("没有可拖拽的文件")
+	}
+	cache := filepath.Join(config.DataDir(), "drag-cache", fmt.Sprintf("%d", time.Now().UnixNano()))
+	var localPaths []string
+	for _, rp := range remotePaths {
+		local, err := transfer.Download(a.ctx, a.settings.RcloneConfig, rp, cache)
+		if err != nil {
+			logf("DragOut download %s err=%v", rp, err)
+			return "", fmt.Errorf("下载 %s 失败：%w", rp, err)
+		}
+		localPaths = append(localPaths, local)
+	}
+	dropped, err := shelldrag.DragOut(localPaths)
+	logf("DragOut files=%d dropped=%v err=%v", len(localPaths), dropped, err)
+	if err != nil {
+		return "", err
+	}
+	if !dropped {
+		return "拖拽已取消", nil
+	}
+	return fmt.Sprintf("已拖出 %d 个文件", len(localPaths)), nil
 }
 
 // CopyRemoteToClipboard 下载远程对象到临时目录并写入剪贴板。

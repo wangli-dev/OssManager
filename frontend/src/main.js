@@ -438,6 +438,25 @@ function renderEntries() {
         ? { name, isDir: row.dataset.dir === 'true', path: state.active + ':' + (state.path ? state.path + '/' : '') + name }
         : null;
     };
+    // 文件拖出：按住鼠标开始拖动时先下载到缓存，再交给系统拖放循环拖到资源管理器。
+    row.draggable = true;
+    row.ondragstart = (e) => {
+      const name = row.dataset.name;
+      const isDir = row.dataset.dir === 'true';
+      const prefix = state.active + ':' + (state.path ? state.path + '/' : '');
+      let paths;
+      if (!isDir && state.multi.size > 1 && state.multi.has(name)) {
+        paths = Array.from(state.multi).map((n) => prefix + n);
+      } else {
+        if (isDir) { toast('目录拖出暂不支持，请使用右键「下载目录…」'); e.preventDefault(); return; }
+        paths = [prefix + name];
+      }
+      e.preventDefault();
+      setStatus('正在准备拖拽（下载到本地缓存，请按住鼠标不放）…');
+      api().DragOutFiles(paths)
+        .then((msg) => setStatus(msg))
+        .catch((err) => setStatus('拖拽失败：' + err, true));
+    };
     row.querySelectorAll('button[data-op]').forEach((button) => {
       button.onclick = (e) => {
         e.stopPropagation();
