@@ -47,6 +47,16 @@ func ensureConfig(path string) error {
 	return nil
 }
 
+// Probe 用连接串直接测试连通性，不依赖 rclone 配置文件。
+func Probe(ctx context.Context, remotePath string) error {
+	f, err := fs.NewFs(ctx, remotePath)
+	if err != nil {
+		return err
+	}
+	_, err = f.List(ctx, "")
+	return err
+}
+
 // List 列出 remote:path 下的对象；目录在前，其余按名称排序。
 func List(ctx context.Context, confPath, remote string) ([]Entry, error) {
 	if err := ensureConfig(confPath); err != nil {

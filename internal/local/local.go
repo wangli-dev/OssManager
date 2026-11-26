@@ -12,6 +12,106 @@ import (
 	"unsafe"
 )
 
+// Share 是一个已映射或已记住的网络共享。
+type Share struct {
+	Remote string `json:"remote"`
+	Local  string `json:"local"`
+}
+
+var (
+	mpr                      = syscall.NewLazyDLL("mpr.dll")
+	procWNetOpenEnumW        = mpr.NewProc("WNetOpenEnumW")
+	procWNetEnumResourceW    = mpr.NewProc("WNetEnumResourceW")
+	procWNetCloseEnum        = mpr.NewProc("WNetCloseEnum")
+)
+
+const (
+	resourceConnected  = 1
+	resourceRemembered = 3
+	resourceTypeDisk   = 1
+	errorMoreData      = 234
+)
+
+type netResource struct {
+	Scope       uint32
+	Type        uint32
+	DisplayType uint32
+	Usage       uint32
+	LocalName   *uint16
+	RemoteName  *uint16
+	Comment     *uint16
+	Provider    *uint16
+}
+
+// NetworkShares 枚举已映射的网络共享（含断连但记住的盘符）。
+func NetworkShares() []Share {
+	seen := map[string]bool{}
+	var result []Share
+	for _, scope := range []uintptr{resourceConnected, resourceRemembered} {
+		for _, share := range enumerateShares(scope) {
+			key := strings.ToLower(share.Remote)
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			result = append(result, share)
+		}
+	}
+	return result
+}
+
+func enumerateShares(scope uintptr) []Share {
+	var handle syscall.Handle
+	ret, _, _ := procWNetOpenEnumW.Call(scope, resourceTypeDisk, 0, 0, uintptr(unsafe.Pointer(&handle)))
+	if ret != 0 {
+		return nil
+	}
+	defer procWNetCloseEnum.Call(uintptr(handle))
+
+	var result []Share
+	buffer := make([]byte, 16*1024)
+	for {
+		count := uint32(0xFFFFFFFF)
+		size := uint32(len(buffer))
+		ret, _, _ := procWNetEnumResourceW.Call(
+			uintptr(handle),
+			uintptr(unsafe.Pointer(&count)),
+			uintptr(unsafe.Pointer(&buffer[0])),
+			uintptr(unsafe.Pointer(&size)),
+		)
+		if ret == errorMoreData {
+			continue
+		}
+		if ret != 0 || count == 0 {
+			break
+		}
+		items := unsafe.Slice((*netResource)(unsafe.Pointer(&buffer[0])), count)
+		for index := 0; index < int(count); index++ {
+			remote := utf16PtrString(items[index].RemoteName)
+			if !strings.HasPrefix(remote, `\\`) {
+				continue
+			}
+			result = append(result, Share{Remote: remote, Local: utf16PtrString(items[index].LocalName)})
+		}
+	}
+	return result
+}
+
+func utf16PtrString(value *uint16) string {
+	if value == nil {
+		return ""
+	}
+	var chars []uint16
+	for ptr := unsafe.Pointer(value); ; ptr = unsafe.Add(ptr, 2) {
+		current := *(*uint16)(ptr)
+		if current == 0 {
+			break
+		}
+		chars = append(chars, current)
+	}
+	return syscall.UTF16ToString(chars)
+}
+
 // Entry 是本地目录中的一项。
 type Entry struct {
 	Name    string `json:"name"`

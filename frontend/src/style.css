@@ -95,6 +95,31 @@ aside .list-head .list-title { padding: 0; }
 aside .list-head .list-tools-inline { display: flex; align-items: center; gap: 4px; }
 aside .list-head button { padding: 0 6px; font-size: 12px; line-height: 18px; }
 
+#conn-pane {
+  margin: 10px 0 10px 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+}
+#connections { padding: 0 6px 8px; overflow: auto; }
+#connections .conn { border-bottom: none; border-radius: 6px; }
+.conn-sep { height: 1px; background: var(--border); margin: 6px 4px; }
+
+.conn-popover {
+  position: fixed;
+  z-index: 60;
+  width: 300px;
+  max-height: 70vh;
+  overflow: auto;
+  padding: 6px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.28);
+}
+.conn-popover .conn { border-bottom: none; border-radius: 6px; }
+.conn-quick { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
 /* 连接栏收起后，顶部用下拉框选择连接 */
 .conn-quick {
   max-width: 130px;
@@ -241,11 +266,20 @@ dialog .footer { display: flex; justify-content: flex-end; gap: 8px; margin-top:
 }
 
 .crumbs a:hover { background: var(--accent-soft); }
+.crumbs #go-up { padding: 2px 7px; }
 .crumbs .trail { display: inline-flex; gap: 4px; align-items: center; flex-wrap: wrap; }
 .crumbs .trail a { border: none; padding: 1px 4px; }
 .crumbs .trail a:hover { background: var(--accent-soft); }
 
-td.ops button { padding: 1px 3px; font-size: 12px; margin-right: 1px; line-height: 18px; }
+td.ops button {
+  background: transparent;
+  border: 0;
+  padding: 1px 3px;
+  font-size: 15px;
+  margin-right: 1px;
+  line-height: 20px;
+}
+td.ops button:hover { background: var(--accent-soft); border-radius: 4px; }
 td.empty { text-align: center; color: var(--muted); padding: 24px 12px; }
 
 .toast {
@@ -306,6 +340,7 @@ dialog label + input { margin-bottom: 2px; }
 ::-webkit-scrollbar-track { background: var(--surface); }
 ::-webkit-scrollbar-thumb { background: #c4c4c8; border-radius: 5px; }
 ::-webkit-scrollbar-thumb:hover { background: #a8a8b0; }
+::-webkit-scrollbar-corner { background: transparent; }
 body.dark ::-webkit-scrollbar-track { background: #2a2a2c; }
 body.dark ::-webkit-scrollbar-thumb { background: #4a4a52; }
 body.dark ::-webkit-scrollbar-thumb:hover { background: #5c5c66; }

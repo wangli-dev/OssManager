@@ -322,6 +322,11 @@ func (a *App) ListLocal(path string) ([]local.Entry, error) {
 	return local.List(path)
 }
 
+// NetworkShares 返回已映射的网络共享，供连接列表统一展示。
+func (a *App) NetworkShares() []local.Share {
+	return local.NetworkShares()
+}
+
 // LocalDrives 返回本地盘符与网络位置，rclone 挂载的盘符用连接名作为名称。
 func (a *App) LocalDrives() []local.Drive {
 	drives := local.Drives()
@@ -422,6 +427,15 @@ func (a *App) RenameConnection(oldName, newName string) error {
 func (a *App) TestConnection(name string) error {
 	_, err := rclonefs.List(a.ctx, a.settings.RcloneConfig, name+":")
 	return err
+}
+
+// TestConnectionInput 测试尚未保存的连接参数，用于新建/编辑时校验输入。
+func (a *App) TestConnectionInput(def remote.Definition) error {
+	connString, err := remote.ConnectionString(def)
+	if err != nil {
+		return err
+	}
+	return rclonefs.Probe(a.ctx, connString)
 }
 
 // downloadStreams 返回单文件分片数，非法值退回默认 4。

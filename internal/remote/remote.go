@@ -8,6 +8,66 @@ import (
 	"strings"
 )
 
+// ConnectionString 由连接定义构造 rclone 连接串，用于保存前的连通性测试。
+func ConnectionString(def Definition) (string, error) {
+	if strings.TrimSpace(def.Endpoint) == "" || strings.TrimSpace(def.Account) == "" {
+		return "", errors.New("名称、端点和账号不能为空")
+	}
+	quote := func(value string) string {
+		return `"` + strings.ReplaceAll(value, `"`, `""`) + `"`
+	}
+	var parts []string
+	switch {
+	case isS3(def.Type):
+		provider := "Other"
+		if isMinio(def.Type) {
+			provider = "Minio"
+		} else if isAlibaba(def.Type) {
+			provider = "Alibaba"
+		}
+		parts = append(parts, "s3",
+			"provider="+quote(provider),
+			"env_auth="+quote("false"),
+			"endpoint="+quote(def.Endpoint),
+			"access_key_id="+quote(def.Account),
+		)
+		if def.Secret != "" {
+			parts = append(parts, "secret_access_key="+quote(def.Secret))
+		}
+		if def.Region != "" {
+			parts = append(parts, "region="+quote(def.Region))
+		}
+	case strings.EqualFold(def.Type, "webdav"):
+		parts = append(parts, "webdav",
+			"url="+quote(def.Endpoint),
+			"vendor="+quote("other"),
+			"user="+quote(def.Account),
+		)
+		if def.Secret != "" {
+			parts = append(parts, "pass="+quote(def.Secret))
+		}
+	case strings.EqualFold(def.Type, "sftp"):
+		parts = append(parts, "sftp",
+			"host="+quote(def.Endpoint),
+			"user="+quote(def.Account),
+		)
+		if def.Secret != "" {
+			parts = append(parts, "pass="+quote(def.Secret))
+		}
+	case strings.EqualFold(def.Type, "ftp"):
+		parts = append(parts, "ftp",
+			"host="+quote(def.Endpoint),
+			"user="+quote(def.Account),
+		)
+		if def.Secret != "" {
+			parts = append(parts, "pass="+quote(def.Secret))
+		}
+	default:
+		return "", errors.New("不支持的连接类型：" + def.Type)
+	}
+	return ":" + strings.Join(parts, ",") + ":", nil
+}
+
 // Definition 是新增或编辑连接时提交的字段。
 type Definition struct {
 	Name        string `json:"name"`
