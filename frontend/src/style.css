@@ -46,7 +46,9 @@ header {
 }
 .header-side { flex: 1; }
 .header-center { display: flex; align-items: center; gap: 6px; }
-.header-right { flex: 1; display: flex; justify-content: flex-end; }
+.header-right { flex: 1; display: flex; justify-content: flex-end; align-items: center; gap: 6px; }
+.header-right .chip { padding: 4px 10px; }
+.header-right .chip:disabled { opacity: 0.45; cursor: default; }
 
 header h1 { font-size: 16px; margin: 0 12px 0 0; }
 
@@ -145,15 +147,6 @@ aside .list-head button { padding: 0 6px; font-size: 12px; line-height: 18px; }
   user-select: none;
 }
 .conn-handle:hover { background: var(--accent-soft); color: var(--accent-text); }
-.conn-handle.open {
-  position: static;
-  align-self: center;
-  width: 15px;
-  height: 58px;
-  border-radius: 0 8px 8px 0;
-  border: 1px solid var(--border);
-  border-left: none;
-}
 
 /* 连接栏收起后，顶部用下拉框选择连接 */
 .conn-quick {
@@ -324,9 +317,10 @@ dialog .footer { display: flex; justify-content: flex-end; gap: 8px; margin-top:
 
 .crumbs a:hover { background: var(--accent-soft); }
 .crumbs #go-up { padding: 2px 7px; }
-.crumbs .trail { display: inline-flex; gap: 4px; align-items: center; flex-wrap: wrap; }
-.crumbs .trail a { border: none; padding: 1px 4px; }
+.crumbs .trail { display: inline-flex; gap: 0; align-items: center; flex-wrap: wrap; }
+.crumbs .trail a { border: none; padding: 1px 3px; }
 .crumbs .trail a:hover { background: var(--accent-soft); }
+.crumbs .sep { color: var(--muted); margin: 0 1px; user-select: none; }
 
 td.ops button {
   background: transparent;
@@ -372,9 +366,23 @@ td.empty { text-align: center; color: var(--muted); padding: 24px 12px; }
   padding: 4px;
 }
 
-.menu-item { padding: 7px 12px; border-radius: 5px; cursor: pointer; font-size: 13px; }
-.menu-item:hover { background: var(--accent-soft); }
+.menu-item { padding: 7px 12px; border-radius: 5px; cursor: pointer; font-size: 13px; white-space: nowrap; }
+.menu-item:hover, .menu-item.open { background: var(--accent-soft); }
 .menu-item.danger { color: var(--danger); }
+.menu-item.has-sub { padding-right: 26px; position: relative; }
+.menu-item.has-sub::after {
+  content: '›';
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--muted);
+}
+.menu-head {
+  padding: 6px 12px 3px;
+  color: var(--muted);
+  font-size: 11px;
+}
 .menu-sep { height: 1px; margin: 4px 8px; background: var(--border); }
 
 select, textarea {
@@ -526,13 +534,13 @@ section.files .wails-drop-target-active {
 /* 下载记录 */
 .history-list {
   max-height: 420px;
-  min-width: 560px;
+  min-width: 700px;
   overflow: auto;
   border: 1px solid var(--border);
   border-radius: 8px;
 }
 
-#history-dialog { width: 860px; max-width: 92vw; }
+#history-dialog { width: 1000px; max-width: 94vw; }
 
 .history-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
 .history-table th, .history-table td {
@@ -554,6 +562,7 @@ section.files .wails-drop-target-active {
 .history-table .hsize { text-align: right; }
 .history-table .htime { color: var(--muted); white-space: nowrap; }
 .history-table .hpath { color: var(--muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.history-table .hremote { color: var(--muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .history-table .hops { text-align: center; }
 .history-table .hops button { background: transparent; border: 0; font-size: 14px; padding: 1px 4px; cursor: pointer; }
 .history-table .hops button:hover { background: var(--accent-soft); border-radius: 4px; }
@@ -662,6 +671,17 @@ body.dark tbody tr:nth-child(even) { background: rgba(255, 255, 255, 0.03); }
   border-radius: 3px;
 }
 #tabs .tab-close:hover { color: var(--danger); background: color-mix(in srgb, var(--danger) 15%, transparent); }
+#tabs .tab.drop-target { outline: 2px dashed var(--accent); outline-offset: -2px; background: var(--accent-soft); }
+
+dialog h3.form-head {
+  margin: 14px 0 2px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 4px;
+}
+.crumbs .tool-sep { margin: 0 2px; }
 
 /* 首次加载占位：转圈 + 提示文字 */
 .browse-loading {

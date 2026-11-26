@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/rclone/rclone/fs"
@@ -31,7 +32,7 @@ import (
 	"OssManager/internal/transfer"
 )
 
-const appVersion = "1.3.1"
+const appVersion = "1.3.2"
 
 func logf(format string, args ...interface{}) {
 	_ = os.MkdirAll(config.DataDir(), 0o755)
@@ -101,8 +102,6 @@ func (a *App) restoreMounts() {
 		}
 	}
 	seen := make(map[string]bool)
-	// 挂载记录里没写卷标时用连接显示名（conf 的 description），避免卷标露出 oss_xxx 这类内部 ID。
-	displayNames := a.connectionDisplayNames()
 	for _, record := range config.ReadMountRecords() {
 		// 记录已带完整 remote（连接名: 或 连接名:/路径），直接使用，不再二次补冒号。
 		remote := config.NormalizeRemote(record.Remote)
@@ -124,7 +123,7 @@ func (a *App) restoreMounts() {
 		options := a.mountOptions(remote)
 		options.VolumeName = record.VolumeName
 		if options.VolumeName == "" {
-			options.VolumeName = a.volumeLabel(remote, displayNames)
+			options.VolumeName = a.volumeLabel(remote)
 		}
 		if err := a.mounter.Mount(a.ctx, a.settings.RcloneConfig, remote, record.Drive, options); err != nil {
 			logf("restore mount %s %s err=%v", remote, record.Drive, err)
@@ -145,7 +144,7 @@ func (a *App) restoreMounts() {
 func (a *App) addMountRecord(remote, drive, volumeName string) {
 	remote = config.NormalizeRemote(remote)
 	if volumeName == "" {
-		volumeName = a.volumeLabel(remote, a.connectionDisplayNames())
+		volumeName = a.volumeLabel(remote)
 	}
 	records := config.ReadMountRecords()
 	for _, record := range records {
@@ -157,29 +156,9 @@ func (a *App) addMountRecord(remote, drive, volumeName string) {
 	_ = config.WriteMountRecords(records)
 }
 
-// volumeLabel 返回挂载卷标：连接显示名（conf 的 description）优先，其次连接名；
-// 不会带出 host:/ 这类路径，也不会露出 oss_xxx 之外的内部拼接串。
-func (a *App) volumeLabel(remote string, displayNames map[string]string) string {
-	name := config.RemoteName(remote)
-	if label := displayNames[strings.ToLower(name)]; label != "" {
-		return label
-	}
-	return name
-}
-
-// connectionDisplayNames 返回小写连接名到显示名（conf 的 description）的映射。
-func (a *App) connectionDisplayNames() map[string]string {
-	result := map[string]string{}
-	connections, err := config.ListConnections(a.settings.RcloneConfig)
-	if err != nil {
-		return result
-	}
-	for _, item := range connections {
-		if item.DisplayName != "" && item.DisplayName != item.Name {
-			result[strings.ToLower(item.Name)] = item.DisplayName
-		}
-	}
-	return result
+// volumeLabel 返回挂载卷标：连接名即显示名，不再区分 description。
+func (a *App) volumeLabel(remote string) string {
+	return config.RemoteName(remote)
 }
 
 func (a *App) removeMountRecordByDrive(drive string) {
@@ -263,8 +242,8 @@ func (a *App) Mount(remote, drive, volumeName string) error {
 	options := a.mountOptions(remote)
 	options.VolumeName = volumeName
 	if options.VolumeName == "" {
-		// 前端未填卷标时用连接显示名，避免卷标显示内部连接 ID。
-		options.VolumeName = a.volumeLabel(remote, a.connectionDisplayNames())
+		// 前端未填卷标时用连接名，名称与显示名已统一。
+		options.VolumeName = a.volumeLabel(remote)
 	}
 	err := a.mounter.Mount(a.ctx, a.settings.RcloneConfig, remote, drive, options)
 	logf("Mount result err=%v", err)
@@ -343,6 +322,41 @@ func (a *App) ListMounts() map[string]string {
 	return mounts
 }
 
+// MountInfo 是一条挂载信息，供编辑连接时回显盘符与卷标。
+type MountInfo struct {
+	Drive  string `json:"drive"`
+	Volume string `json:"volume"`
+}
+
+// GetMountInfo 返回连接当前的挂载盘符与卷标；未挂载时返回空值。
+func (a *App) GetMountInfo(name string) MountInfo {
+	target := config.RemoteName(config.NormalizeRemote(name))
+	result := MountInfo{}
+	pick := func(drive, remote string) {
+		if result.Drive == "" && strings.EqualFold(config.RemoteName(remote), target) {
+			result.Drive = drive
+		}
+	}
+	for drive, remote := range a.mounter.List() {
+		pick(drive, remote)
+	}
+	for _, entry := range mount.CachedExternal() {
+		pick(entry.Drive, entry.Remote)
+	}
+	for _, record := range config.ReadMountRecords() {
+		if !strings.EqualFold(config.RemoteName(record.Remote), target) {
+			continue
+		}
+		if result.Drive == "" {
+			result.Drive = record.Drive
+		}
+		if strings.EqualFold(record.Drive, result.Drive) {
+			result.Volume = record.VolumeName
+		}
+	}
+	return result
+}
+
 // FreeDrives 返回当前未被占用的盘符，按 Z 到 D 的顺序。
 func (a *App) FreeDrives() []string {
 	result := []string{}
@@ -399,6 +413,12 @@ func (a *App) UnmountNetworkLocation(unc string) error {
 	return local.UnmountNetwork(unc)
 }
 
+// RemapNetworkLocation 修改已映射共享的盘符。
+func (a *App) RemapNetworkLocation(unc, drive string) error {
+	logf("RemapNetwork %s -> %s", unc, drive)
+	return local.RemapNetwork(unc, drive)
+}
+
 // DownloadHistory 返回历史下载记录，最新的在前。
 func (a *App) DownloadHistory() []download.Record {
 	return download.Read()
@@ -419,6 +439,21 @@ func (a *App) OpenDownloadFolder(localPath string) error {
 		dir = config.DataDir()
 	}
 	return filemanager.Open(dir, a.settings.FileManager)
+}
+
+// RevealInExplorer 在资源管理器中打开目录并选中文件；路径是目录时直接打开。
+func (a *App) RevealInExplorer(localPath string) error {
+	value := strings.TrimSpace(localPath)
+	if value == "" {
+		value = config.DataDir()
+	}
+	info, err := os.Stat(value)
+	if err != nil || info.IsDir() {
+		return filemanager.Open(value, a.settings.FileManager)
+	}
+	command := exec.Command("explorer", "/select,"+value)
+	command.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: 0x08000000}
+	return command.Start()
 }
 
 // GetPolicy 读取桶策略。
@@ -444,8 +479,10 @@ func (a *App) SetACL(remoteName, bucket, acl string) error {
 	return err
 }
 
-// SaveConnection 新增或更新连接。
+// SaveConnection 新增或更新连接；名称与显示名统一使用同一个值。
 func (a *App) SaveConnection(def remote.Definition, exists bool) error {
+	def.Name = strings.TrimSpace(def.Name)
+	def.DisplayName = def.Name
 	err := remote.Save(a.settings.RcloneConfig, def, exists)
 	logf("SaveConnection %s exists=%v err=%v", def.Name, exists, err)
 	return err
@@ -705,6 +742,11 @@ func (a *App) ImportConnections(path string, applySettings bool) (string, error)
 // PickFile 打开文件选择框。
 func (a *App) PickFile() (string, error) {
 	return runtime.OpenFileDialog(a.ctx, runtime.OpenDialogOptions{})
+}
+
+// PickFiles 打开多选文件对话框，支持一次上传多个文件。
+func (a *App) PickFiles() ([]string, error) {
+	return runtime.OpenMultipleFilesDialog(a.ctx, runtime.OpenDialogOptions{})
 }
 
 // PickFolder 打开目录选择框。

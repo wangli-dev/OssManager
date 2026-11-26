@@ -19,10 +19,10 @@ type Share struct {
 }
 
 var (
-	mpr                      = syscall.NewLazyDLL("mpr.dll")
-	procWNetOpenEnumW        = mpr.NewProc("WNetOpenEnumW")
-	procWNetEnumResourceW    = mpr.NewProc("WNetEnumResourceW")
-	procWNetCloseEnum        = mpr.NewProc("WNetCloseEnum")
+	mpr                   = syscall.NewLazyDLL("mpr.dll")
+	procWNetOpenEnumW     = mpr.NewProc("WNetOpenEnumW")
+	procWNetEnumResourceW = mpr.NewProc("WNetEnumResourceW")
+	procWNetCloseEnum     = mpr.NewProc("WNetCloseEnum")
 )
 
 const (
@@ -132,6 +132,7 @@ var (
 	procGetLogicalDrives      = kernel32.NewProc("GetLogicalDrives")
 	procGetDriveTypeW         = kernel32.NewProc("GetDriveTypeW")
 	procGetVolumeInformationW = kernel32.NewProc("GetVolumeInformationW")
+	procWNetGetConnectionW    = mpr.NewProc("WNetGetConnectionW")
 )
 
 // List 列出本地目录；路径支持盘符、UNC 共享与正反斜杠混写。
@@ -175,7 +176,8 @@ func Drives() []Drive {
 		}
 		root := string(rune('A'+index)) + `:\`
 		drive := Drive{Root: root, Label: string(rune('A' + index)), Kind: "fixed"}
-		if value, _, err := procGetDriveTypeW.Call(uintptr(unsafe.Pointer(syscall.StringToUTF16Ptr(root)))); err == nil {
+		// Proc.Call 的 err 恒为非 nil，必须看第一个返回值，否则网络盘会被当成固定盘。
+		if value, _, _ := procGetDriveTypeW.Call(uintptr(unsafe.Pointer(syscall.StringToUTF16Ptr(root)))); value != 0 {
 			switch value {
 			case 2:
 				drive.Kind = "removable"
@@ -183,14 +185,46 @@ func Drives() []Drive {
 				drive.Kind = "network"
 			case 5:
 				drive.Kind = "cdrom"
+			case 6:
+				drive.Kind = "ramdisk"
 			}
 		}
 		if label := volumeLabel(root); label != "" {
 			drive.Label = label
 		}
+		// 网络盘用共享名做名称，与连接列表里的共享条目保持一致（Windows 的卷标常为空或“新加卷”）。
+		if drive.Kind == "network" {
+			if base := shareBaseName(networkConnection(root)); base != "" {
+				drive.Label = base
+			}
+		}
 		result = append(result, drive)
 	}
 	return result
+}
+
+// networkConnection 读取盘符对应的 UNC 共享路径；非映射盘返回空。
+func networkConnection(root string) string {
+	buffer := make([]uint16, syscall.MAX_PATH+1)
+	size := uint32(len(buffer))
+	ret, _, _ := procWNetGetConnectionW.Call(
+		uintptr(unsafe.Pointer(syscall.StringToUTF16Ptr(strings.TrimSuffix(root, `\`)))),
+		uintptr(unsafe.Pointer(&buffer[0])),
+		uintptr(unsafe.Pointer(&size)),
+	)
+	if ret != 0 {
+		return ""
+	}
+	return syscall.UTF16ToString(buffer)
+}
+
+// shareBaseName 取 UNC 路径最后一段作为共享名称。
+func shareBaseName(unc string) string {
+	parts := strings.FieldsFunc(strings.TrimSpace(unc), func(r rune) bool { return r == '\\' || r == '/' })
+	if len(parts) == 0 {
+		return ""
+	}
+	return parts[len(parts)-1]
 }
 
 // volumeLabel 读取卷标；网络盘无响应时按空处理，避免拖慢界面。
@@ -255,6 +289,43 @@ func UnmountNetwork(unc string) error {
 	command.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: 0x08000000}
 	if output, err := command.CombinedOutput(); err != nil {
 		return fmt.Errorf("%s", strings.TrimSpace(string(output)))
+	}
+	return nil
+}
+
+// RemapNetwork 把已映射的共享改挂到新盘符：先断开旧映射，再按新盘符建立映射。
+func RemapNetwork(unc, drive string) error {
+	value := strings.TrimSpace(unc)
+	if !IsUNC(value) {
+		return fmt.Errorf("路径应为 \\\\服务器\\共享 形式")
+	}
+	target := strings.ToUpper(strings.TrimSpace(drive))
+	if len(target) != 2 || target[1] != ':' {
+		return fmt.Errorf("盘符应为 D: 形式")
+	}
+	current := ""
+	for _, share := range NetworkShares() {
+		if strings.EqualFold(share.Remote, value) {
+			current = strings.ToUpper(strings.TrimSpace(share.Local))
+			break
+		}
+	}
+	if current == target {
+		return nil
+	}
+	if current != "" {
+		if err := UnmountNetwork(value); err != nil {
+			return err
+		}
+	}
+	command := exec.Command("net", "use", target, value, "/persistent:no")
+	command.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: 0x08000000}
+	if output, err := command.CombinedOutput(); err != nil {
+		text := strings.TrimSpace(string(output))
+		if text == "" {
+			return err
+		}
+		return fmt.Errorf("%s", text)
 	}
 	return nil
 }
