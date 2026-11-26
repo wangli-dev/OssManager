@@ -2172,6 +2172,11 @@ async function downloadEntryToTarget(name) {
     const path = cacheOf(tab).path || '';
     targets.push({ kind: 'remote', label: `${(conn && conn.displayName) || tab} / ${path || '/'}`, dir: tab + ':' + path });
   });
+  // 未打开但已保存的连接也可以作为目标（复制到该连接根目录）。
+  state.connections.forEach((conn) => {
+    if (tabOrder.includes(conn.name)) return;
+    targets.push({ kind: 'remote', label: `${conn.displayName || conn.name} /（未打开）`, dir: conn.name + ':' });
+  });
   if (state.localTab) {
     targets.push({ kind: 'local', label: `本地文件 / ${state.localView.path}`, dir: state.localView.path });
   }
