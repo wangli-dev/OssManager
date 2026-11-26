@@ -2,6 +2,7 @@ package policy
 
 import (
 	"context"
+	"fmt"
 	"net/url"
 	"strings"
 	"time"
@@ -73,6 +74,20 @@ func GetACL(ctx context.Context, confPath, remote, bucket string) (ACL, error) {
 		result.Grants = append(result.Grants, item)
 	}
 	return result, nil
+}
+
+// SetCannedACL 设置桶的 canned ACL，仅允许 private（私有）与 public-read（公共只读）两档；
+// 更细粒度的授权请使用桶策略（PutPolicy）。
+func SetCannedACL(ctx context.Context, confPath, remote, bucket, acl string) error {
+	if acl != string(types.BucketCannedACLPrivate) && acl != string(types.BucketCannedACLPublicRead) {
+		return fmt.Errorf("不支持的 ACL：%s（自定义授权请使用桶策略）", acl)
+	}
+	client := clientFor(confPath, remote)
+	_, err := client.PutBucketAcl(ctx, &s3.PutBucketAclInput{
+		Bucket: aws.String(bucket),
+		ACL:    types.BucketCannedACL(acl),
+	})
+	return err
 }
 
 // CreateBucket 新建桶。

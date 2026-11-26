@@ -146,6 +146,10 @@ function renderShell() {
       <label>策略 JSON 预览</label>
       <textarea id="policy-text" rows="6" readonly></textarea>
       <label id="policy-acl"></label>
+      <div class="row">
+        <button id="acl-private">设为私有</button>
+        <button id="acl-public-read">设为公共只读</button>
+      </div>
       <div class="footer">
         <button id="policy-cancel">取消</button>
         <button id="policy-save" class="primary">保存策略</button>
@@ -247,6 +251,8 @@ function renderShell() {
   document.getElementById('policy-cancel').onclick = () => document.getElementById('policy-dialog').close();
   document.getElementById('policy-save').onclick = savePolicy;
   document.getElementById('policy-add').onclick = addStatement;
+  document.getElementById('acl-private').onclick = () => applyACL('private');
+  document.getElementById('acl-public-read').onclick = () => applyACL('public-read');
   document.getElementById('pd-apply').onclick = applyStatement;
   document.getElementById('settings-cancel').onclick = () => document.getElementById('settings-dialog').close();
   document.getElementById('settings-save').onclick = saveSettings;
@@ -917,6 +923,18 @@ async function openPolicy(bucket) {
   } catch (err) { notify('读取策略失败：' + err, true); }
   renderPolicy();
   document.getElementById('policy-dialog').showModal();
+}
+
+async function applyACL(acl) {
+  if (!policy.bucket || !state.active) return;
+  const label = acl === 'private' ? '私有' : '公共只读';
+  if (!confirm('确认将桶 ' + policy.bucket + ' 的 ACL 设为' + label + '？')) return;
+  try {
+    await api().SetACL(state.active, policy.bucket, acl);
+    notify('ACL 已更新为' + label);
+    const aclInfo = await api().GetACL(state.active, policy.bucket);
+    document.getElementById('policy-acl').textContent = '所有者：' + (aclInfo.owner || '未知') + '；授权条目：' + (aclInfo.grants ? aclInfo.grants.length : 0);
+  } catch (err) { notify('设置 ACL 失败：' + err, true); }
 }
 
 async function savePolicy() {

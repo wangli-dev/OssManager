@@ -264,6 +264,14 @@ func (a *App) GetACL(remoteName, bucket string) (policy.ACL, error) {
 	return policy.GetACL(a.ctx, a.settings.RcloneConfig, remoteName, bucket)
 }
 
+// SetACL 设置桶的 canned ACL（private / public-read）；自定义授权请编辑桶策略。
+func (a *App) SetACL(remoteName, bucket, acl string) error {
+	logf("SetACL remote=%s bucket=%s acl=%s", remoteName, bucket, acl)
+	err := policy.SetCannedACL(a.ctx, a.settings.RcloneConfig, remoteName, bucket, acl)
+	logf("SetACL err=%v", err)
+	return err
+}
+
 // SaveConnection 新增或更新连接。
 func (a *App) SaveConnection(def remote.Definition, exists bool) error {
 	err := remote.Save(a.settings.RcloneConfig, def, exists)
