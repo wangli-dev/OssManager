@@ -28,6 +28,7 @@ func main() {
 		singleinstance.Activate("OssManager")
 		return
 	}
+	warnIfElevated()
 	app := NewApp()
 
 	err = wails.Run(&options.App{
