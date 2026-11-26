@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/rclone/rclone/fs"
+	"github.com/rclone/rclone/fs/log"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 
 	"OssManager/internal/bundle"
@@ -59,6 +60,12 @@ func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 	a.settings = config.LoadSettings()
 	transfer.SetConcurrency(a.settings.MaxConcurrentTransfers)
+	// rclone 库运行日志落盘：挂载会话断线、目录列表失败等错误此前静默丢失，无法排查。
+	log.Opt.File = filepath.Join(config.DataDir(), "rclone-lib.log")
+	// 两层都要设置：fs.Debugf 入口按 fs.Config.LogLevel 过滤，slog handler 按 SetLevel 过滤。
+	fs.GetConfig(ctx).LogLevel = fs.LogLevelDebug
+	log.InitLogging()
+	log.Handler.SetLevel(fs.LogLevelToSlog(fs.LogLevelDebug))
 	go a.restoreMounts()
 }
 
@@ -117,7 +124,14 @@ func (a *App) restoreMounts() {
 		if err := a.mounter.Mount(a.ctx, a.settings.RcloneConfig, remote, record.Drive, options); err != nil {
 			logf("restore mount %s %s err=%v", remote, record.Drive, err)
 		} else {
-			logf("restore mount %s %s ok", remote, record.Drive)
+			// 挂载成功后立即在进程内读一次目录：区分「进程内列表为空」与「外部读取侧问题」。
+			entries, readErr := os.ReadDir(record.Drive + "\\")
+			logf("restore mount %s %s ok, in-proc readdir=%d err=%v", remote, record.Drive, len(entries), readErr)
+			if len(entries) == 0 {
+				// vfs 目录为空时用 backend 直读对照：区分 backend 层与 fuse/vfs 层的问题。
+				items, listErr := rclonefs.List(a.ctx, a.settings.RcloneConfig, remote)
+				logf("restore mount %s backend list=%d err=%v", remote, len(items), listErr)
+			}
 		}
 	}
 	runtime.EventsEmit(a.ctx, "mounts-changed")

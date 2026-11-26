@@ -40,6 +40,10 @@ func runAutotest() {
 		return
 	}
 	name := connections[0].Name
+	// 支持 --autotest <连接名> 指定连接，便于定位特定连接的挂载问题。
+	if len(os.Args) > 2 {
+		name = os.Args[2]
+	}
 	entries, err := rclonefs.List(ctx, settings.RcloneConfig, name+":")
 	logf("autotest list %s entries=%d err=%v", name, len(entries), err)
 	if len(entries) > 0 {
@@ -48,11 +52,13 @@ func runAutotest() {
 		logf("autotest policy %s bytes=%d err=%v", bucket, len(text), err)
 	}
 	manager := mount.NewManager()
-	if err := manager.Mount(ctx, settings.RcloneConfig, name+":", "Z:", mount.Options{}); err != nil {
+	// 挂连接根目录（与生产 mounts.txt 的路径型记录一致），并做进程内 readdir 计数。
+	if err := manager.Mount(ctx, settings.RcloneConfig, name+":/", "Z:", mount.Options{}); err != nil {
 		logf("autotest mount err=%v", err)
 		return
 	}
-	logf("autotest mount ok Z=%v", driveExists("Z:"))
+	zed, zerr := os.ReadDir("Z:" + "\\")
+	logf("autotest mount ok Z=%v readdir=%d err=%v", driveExists("Z:"), len(zed), zerr)
 	if err := manager.Unmount("Z:"); err != nil {
 		logf("autotest unmount err=%v", err)
 	} else {
