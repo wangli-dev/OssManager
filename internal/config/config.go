@@ -18,8 +18,12 @@ type Settings struct {
 	VfsCacheMaxAge         string   `json:"vfsCacheMaxAge"`
 	BufferSize             string   `json:"bufferSize"`
 	MaxConcurrentTransfers int      `json:"maxConcurrentTransfers"`
+	DownloadStreams        int      `json:"downloadStreams"`
 	DownloadDirectory      string   `json:"downloadDirectory"`
 	DragMode               string   `json:"dragMode"`
+	AutoSizeEnabled        bool     `json:"autoSizeEnabled"`
+	AutoSizeDelay          int      `json:"autoSizeDelay"`
+	AutoSizeInterval       int      `json:"autoSizeInterval"`
 	ServerModtimeRemotes   []string `json:"serverModtimeRemotes"`
 }
 
@@ -50,7 +54,7 @@ func SettingsPath() string {
 
 // LoadSettings 读取设置；首次启动时尝试从 C# 版本迁移 rclone 配置路径。
 func LoadSettings() Settings {
-	value := Settings{Theme: "light"}
+	value := Settings{Theme: "light", AutoSizeEnabled: true, AutoSizeDelay: 5, AutoSizeInterval: 2}
 	if data, err := os.ReadFile(SettingsPath()); err == nil {
 		_ = json.Unmarshal(data, &value)
 	} else if old := legacySettingsPath(); old != "" {
@@ -98,6 +102,12 @@ func LoadSettings() Settings {
 	if value.MaxConcurrentTransfers <= 0 {
 		value.MaxConcurrentTransfers = 4
 	}
+	if value.DownloadStreams <= 0 {
+		value.DownloadStreams = 4
+	}
+	if value.DownloadStreams > 16 {
+		value.DownloadStreams = 16
+	}
 	if strings.TrimSpace(value.DirCacheTime) == "" {
 		value.DirCacheTime = "12h"
 	}
@@ -112,6 +122,12 @@ func LoadSettings() Settings {
 	}
 	if value.DragMode != "shell" {
 		value.DragMode = "panes"
+	}
+	if value.AutoSizeDelay < 0 {
+		value.AutoSizeDelay = 0
+	}
+	if value.AutoSizeInterval < 0 {
+		value.AutoSizeInterval = 0
 	}
 	// 数据目录没有设置文件时立即落盘一份，保证配置文件固定与 exe 同目录。
 	if _, err := os.Stat(SettingsPath()); err != nil {

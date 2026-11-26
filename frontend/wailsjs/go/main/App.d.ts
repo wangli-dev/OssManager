@@ -23,6 +23,8 @@ export function Delete(arg1:string,arg2:boolean):Promise<void>;
 
 export function DeleteConnection(arg1:string):Promise<void>;
 
+export function DirSize(arg1:string):Promise<number>;
+
 export function Download(arg1:string,arg2:string):Promise<string>;
 
 export function DownloadBatch(arg1:Array<string>,arg2:string):Promise<string>;

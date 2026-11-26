@@ -30,6 +30,10 @@ export function DeleteConnection(arg1) {
   return window['go']['main']['App']['DeleteConnection'](arg1);
 }
 
+export function DirSize(arg1) {
+  return window['go']['main']['App']['DirSize'](arg1);
+}
+
 export function Download(arg1, arg2) {
   return window['go']['main']['App']['Download'](arg1, arg2);
 }

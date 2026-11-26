@@ -424,9 +424,21 @@ func (a *App) TestConnection(name string) error {
 	return err
 }
 
+// downloadStreams 返回单文件分片数，非法值退回默认 4。
+func (a *App) downloadStreams() int {
+	streams := a.settings.DownloadStreams
+	if streams <= 0 {
+		streams = 4
+	}
+	if streams > 16 {
+		streams = 16
+	}
+	return streams
+}
+
 // Download 下载远程对象到本地目录，并登记实时进度。
 func (a *App) Download(remotePath, localDir string) (string, error) {
-	local, err := transfer.DownloadWithProgress(a.ctx, a.settings.RcloneConfig, remotePath, localDir)
+	local, err := transfer.DownloadWithProgress(a.ctx, a.settings.RcloneConfig, remotePath, localDir, a.downloadStreams())
 	if err != nil {
 		return "", err
 	}
@@ -684,6 +696,12 @@ func (a *App) ObjectInfo(remotePath string) (map[string]string, error) {
 	return rclonefs.ObjectInfo(a.ctx, a.settings.RcloneConfig, remotePath)
 }
 
+// DirSize 返回目录递归大小（字节），供文件列表自动统计使用。
+func (a *App) DirSize(remotePath string) (int64, error) {
+	_, bytes, err := rclonefs.Size(a.ctx, a.settings.RcloneConfig, remotePath)
+	return bytes, err
+}
+
 // Size 统计目录占用。
 func (a *App) Size(remotePath string) (string, error) {
 	objects, bytes, err := rclonefs.Size(a.ctx, a.settings.RcloneConfig, remotePath)
@@ -802,7 +820,7 @@ func (a *App) DownloadBatch(remotePaths []string, localDir string) (string, erro
 		go func(target string) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			local, err := transfer.DownloadWithProgress(a.ctx, a.settings.RcloneConfig, target, localDir)
+			local, err := transfer.DownloadWithProgress(a.ctx, a.settings.RcloneConfig, target, localDir, a.downloadStreams())
 			mu.Lock()
 			if err != nil {
 				failed++

@@ -14,6 +14,10 @@ const state = {
   multi: new Set(),
   local: { path: '', entries: [], drives: [], visible: true },
   crumbsVisible: false,
+  filter: '',
+  sort: { key: 'name', dir: 1 },
+  nameWidth: 320,
+  connCollapsed: false,
 };
 
 let dragName = null;
@@ -74,6 +78,8 @@ function openTab(name) {
   if (!name) return;
   if (state.active === name) { renderTabs(); return; }
   saveActiveTab();
+  clearFilter();
+  cancelAutoSize();
   state.active = name;
   state.selected = null;
   state.multi.clear();
@@ -94,6 +100,7 @@ function openTab(name) {
 
 function closeTab(name) {
   const idx = tabOrder.indexOf(name);
+  if (state.active === name) cancelAutoSize();
   if (idx >= 0) tabOrder.splice(idx, 1);
   delete tabCache[name];
   if (state.active === name) {
@@ -123,6 +130,69 @@ let statusEl;
 let menuEl;
 
 const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+// ===== 文件列表栏：标题、筛选、排序与列宽 =====
+const COL_SIZE = 90, COL_TIME = 160, COL_OPS = 120, COL_NAME_MIN = 120, COL_NAME_MAX = 900;
+
+function loadNameWidth() {
+  const saved = parseInt(localStorage.getItem('ossmanager.nameWidth') || '', 10);
+  return saved >= COL_NAME_MIN && saved <= COL_NAME_MAX ? saved : 320;
+}
+
+function clearFilter() {
+  state.filter = '';
+  const input = document.getElementById('filter-input');
+  if (input) input.value = '';
+}
+
+// 标题栏显示当前标签与路径，关掉全部标签后恢复程序名。
+function applyWindowTitle() {
+  if (!(window.runtime && window.runtime.WindowSetTitle)) return;
+  let title = 'OssManager';
+  if (state.active) {
+    const conn = state.connections.find((item) => item.name === state.active);
+    const label = (conn && conn.displayName) || state.active;
+    title = state.path ? `OssManager — ${label} / ${state.path}` : `OssManager — ${label}`;
+  }
+  window.runtime.WindowSetTitle(title);
+}
+
+// 目录优先，再按当前列排序；对中文使用本地化比较。
+function sortEntries(list) {
+  const { key, dir } = state.sort;
+  return list.slice().sort((left, right) => {
+    if (left.isDir !== right.isDir) return left.isDir ? -1 : 1;
+    let result = 0;
+    if (key === 'size') result = (left.size || 0) - (right.size || 0);
+    else if (key === 'time') result = String(left.modTime || '').localeCompare(String(right.modTime || ''));
+    else result = String(left.name).localeCompare(String(right.name), 'zh-CN', { numeric: true, sensitivity: 'base' });
+    return result * dir;
+  });
+}
+
+// 拖动名称列右边缘调整列宽，其余列固定宽度并允许表格横向滚动。
+function startNameResize(e) {
+  e.preventDefault();
+  e.stopPropagation();
+  const startX = e.clientX;
+  const startWidth = loadNameWidth();
+  const table = document.querySelector('#entries table');
+  const move = (event) => {
+    const width = Math.max(COL_NAME_MIN, Math.min(COL_NAME_MAX, startWidth + event.clientX - startX));
+    state.nameWidth = width;
+    if (!table) return;
+    const col = table.querySelector('col');
+    if (col) col.style.width = width + 'px';
+    table.style.width = `max(100%, ${width + COL_SIZE + COL_TIME + COL_OPS}px)`;
+  };
+  const up = () => {
+    document.removeEventListener('mousemove', move);
+    document.removeEventListener('mouseup', up);
+    localStorage.setItem('ossmanager.nameWidth', String(state.nameWidth || startWidth));
+  };
+  document.addEventListener('mousemove', move);
+  document.addEventListener('mouseup', up);
+}
 
 // 把 rclone/底层错误翻译成人话；匹配不到时返回空串，由界面显示原始错误。
 function describeError(raw) {
@@ -174,6 +244,12 @@ function showMenu(x, y, items) {
   menuEl = document.createElement('div');
   menuEl.className = 'menu';
   items.forEach((item) => {
+    if (item.separator) {
+      const sep = document.createElement('div');
+      sep.className = 'menu-sep';
+      menuEl.appendChild(sep);
+      return;
+    }
     const node = document.createElement('div');
     node.className = 'menu-item' + (item.danger ? ' danger' : '');
     node.textContent = item.label;
@@ -191,25 +267,31 @@ document.addEventListener('click', (e) => { if (menuEl && !menuEl.contains(e.tar
 function renderShell() {
   app.innerHTML = `
     <header>
-      <button id="btn-new" class="primary">新建</button>
-      <button id="btn-refresh">刷新</button>
+      <button id="btn-new" class="primary" title="新建连接 / 添加网络共享">+</button>
+      <span class="tool-sep"></span>
       <button id="btn-mount">挂载</button>
       <button id="btn-unmount">卸载</button>
+      <span class="tool-sep"></span>
       <button id="btn-upload">上传</button>
       <button id="btn-download">下载</button>
       <button id="btn-history">下载记录</button>
       <div class="actions">
+        <select id="conn-quick" class="conn-quick" title="选择连接" style="display:none"></select>
+        <button id="conn-expand" title="展开连接栏" style="display:none">»</button>
+        <span class="tool-sep"></span>
         <button id="btn-crumbs">路径栏</button>
         <button id="btn-local">本地栏</button>
+        <span class="tool-sep"></span>
         <button id="btn-import">导入</button>
         <button id="btn-export">导出</button>
+        <span class="tool-sep"></span>
         <button id="btn-theme">主题</button>
         <button id="btn-about">关于</button>
         <button id="btn-settings">设置</button>
       </div>
     </header>
     <main>
-      <aside id="conn-pane"><div class="list-title">连接</div><div id="connections"></div></aside>
+      <aside id="conn-pane"><div class="list-head"><span class="list-title">连接</span><span class="list-tools-inline"><button id="btn-refresh" title="刷新连接列表">⟳</button><button id="conn-collapse" title="收起连接栏">«</button></span></div><div id="connections"></div></aside>
       <div class="resizer" data-target="conn-pane" title="拖动调整宽度"></div>
       <section class="local" id="local-pane">
         <div class="pane-head">
@@ -227,6 +309,10 @@ function renderShell() {
       <div class="resizer" data-target="local-pane" title="拖动调整宽度"></div>
       <section class="files">
         <div id="tabs"></div>
+        <div class="list-tools" id="list-tools">
+          <input id="filter-input" placeholder="筛选当前目录（名称包含关键字）" />
+          <span id="filter-stat"></span>
+        </div>
         <div class="crumbs" id="crumbs"></div>
         <div id="entries"></div>
       </section>
@@ -303,6 +389,13 @@ function renderShell() {
       <label>传输缓冲</label><input id="set-buffer" />
       <label>并发传输数（下载/上传同时进行）</label>
       <input id="set-transfers" type="number" min="1" max="16" />
+      <label>下载线程数（单文件分片数，1 表示不分片）</label>
+      <input id="set-streams" type="number" min="1" max="16" />
+      <label class="chk"><input type="checkbox" id="set-autosize" /> 自动统计目录大小</label>
+      <div class="row">
+        <div><label>打开目录后延迟（秒）</label><input id="set-autosize-delay" type="number" min="0" max="60" /></div>
+        <div><label>目录之间间隔（秒）</label><input id="set-autosize-interval" type="number" min="0" max="60" /></div>
+      </div>
       <label>默认下载目录（留空则每次询问）</label><input id="set-download-dir" placeholder="例如 D:\Downloads" />
       <label>拖拽远程文件时</label>
       <select id="set-drag-mode">
@@ -405,7 +498,19 @@ function renderShell() {
     </dialog>
   `;
   statusEl = document.getElementById('status');
-  document.getElementById('btn-new').onclick = () => openEdit(null);
+  document.getElementById('btn-new').onclick = (e) => {
+    e.stopPropagation(); // 防止冒泡到 document 的全局点击监听后立刻关闭菜单
+    const rect = e.currentTarget.getBoundingClientRect();
+    showMenu(rect.left, rect.bottom + 4, [
+      { label: '新建连接…', action: () => openEdit(null) },
+      { label: '添加网络共享…', action: openNetDialog },
+    ]);
+  };
+  document.getElementById('conn-collapse').onclick = () => toggleConnPane(true);
+  document.getElementById('conn-expand').onclick = () => toggleConnPane(false);
+  document.getElementById('conn-quick').onchange = (e) => { if (e.target.value) openTab(e.target.value); };
+  state.connCollapsed = localStorage.getItem('ossmanager.connCollapsed') === '1';
+  applyConnCollapsed();
   document.getElementById('btn-refresh').onclick = refresh;
   document.getElementById('btn-mount').onclick = mountActive;
   document.getElementById('btn-unmount').onclick = unmountActive;
@@ -424,6 +529,10 @@ function renderShell() {
   document.getElementById('local-drives').onchange = (e) => navigateLocal(e.target.value);
   document.getElementById('local-edit').onclick = editLocalPath;
   document.getElementById('btn-crumbs').onclick = toggleCrumbs;
+  document.getElementById('filter-input').oninput = (e) => {
+    state.filter = e.target.value;
+    renderEntries();
+  };
   bindResizers();
   restorePaneWidths();
   document.getElementById('history-close').onclick = () => document.getElementById('history-dialog').close();
@@ -544,11 +653,42 @@ function renderConnections() {
         { label: '编辑连接…', action: () => openEdit(name) },
         { label: '测试连接', action: () => testConnection(name) },
         { label: '修改名称…', action: () => renameConnection(name) },
+        { separator: true },
         { label: mountDriveOf(name) ? '卸载' : '挂载', action: () => (mountDriveOf(name) ? unmountActive() : mountActive()) },
+        { separator: true },
         { label: '删除连接', danger: true, action: () => deleteConnection(name) },
       ]);
     };
   });
+  renderConnQuick();
+}
+
+// 连接栏收起后，用顶部下拉框选择并打开连接。
+function renderConnQuick() {
+  const select = document.getElementById('conn-quick');
+  if (!select) return;
+  select.innerHTML = '<option value="">选择连接…</option>' + state.connections
+    .map((c) => `<option value="${esc(c.name)}">${esc(c.displayName || c.name)}</option>`).join('');
+  select.value = state.active || '';
+}
+
+function toggleConnPane(collapsed) {
+  state.connCollapsed = collapsed;
+  applyConnCollapsed();
+}
+
+function applyConnCollapsed() {
+  const collapsed = !!state.connCollapsed;
+  const pane = document.getElementById('conn-pane');
+  const bar = document.querySelector('.resizer[data-target="conn-pane"]');
+  const quick = document.getElementById('conn-quick');
+  const expand = document.getElementById('conn-expand');
+  if (pane) pane.style.display = collapsed ? 'none' : '';
+  if (bar) bar.style.display = collapsed ? 'none' : '';
+  if (quick) quick.style.display = collapsed ? '' : 'none';
+  if (expand) expand.style.display = collapsed ? '' : 'none';
+  localStorage.setItem('ossmanager.connCollapsed', collapsed ? '1' : '0');
+  if (collapsed) renderConnQuick();
 }
 
 async function selectConnection(name) {
@@ -599,6 +739,7 @@ async function loadEntries() {
     renderEntries();
     renderTabs();
     updateFooter();
+    scheduleAutoSize();
   } catch (err) {
     if (seq !== browseSeq || state.active !== reqName) {
       // 过期错误不打扰当前连接；仅以 toast 轻提示来源。
@@ -615,6 +756,49 @@ async function loadEntries() {
     const hint = describeError(err);
     setStatus(hint || ('读取失败：' + err), true);
   }
+}
+
+// ===== 目录大小自动统计：打开目录后延时逐个统计，间隔可配置 =====
+let autoSizeTimer = null;
+let autoSizeToken = 0;
+
+function cancelAutoSize() {
+  autoSizeToken++;
+  if (autoSizeTimer) { clearTimeout(autoSizeTimer); autoSizeTimer = null; }
+}
+
+function scheduleAutoSize() {
+  cancelAutoSize();
+  const settings = state.settings || {};
+  if (!settings.autoSizeEnabled) return;
+  if (!state.entries.some((entry) => entry.isDir && !entry.sizeComputed)) return;
+  const token = autoSizeToken;
+  const delay = Math.max(0, Number(settings.autoSizeDelay ?? 5)) * 1000;
+  autoSizeTimer = setTimeout(() => runAutoSize(token), delay);
+}
+
+async function runAutoSize(token) {
+  const settings = state.settings || {};
+  const interval = Math.max(0, Number(settings.autoSizeInterval ?? 2)) * 1000;
+  const tab = state.active;
+  const base = tab + ':' + (state.path ? state.path + '/' : '');
+  for (const entry of state.entries) {
+    if (token !== autoSizeToken || state.active !== tab) return;
+    if (!entry.isDir || entry.sizeComputed) continue;
+    try {
+      const bytes = await api().DirSize(base + entry.name);
+      entry.size = bytes;
+      entry.sizeComputed = true;
+      updateRowSize(entry.name, fmtSize(bytes));
+    } catch (err) { /* 单个目录统计失败不影响其他目录 */ }
+    if (token !== autoSizeToken) return;
+    if (interval) await new Promise((resolve) => setTimeout(resolve, interval));
+  }
+}
+
+function updateRowSize(name, text) {
+  const cell = document.querySelector(`#entries tr.row[data-name="${CSS.escape(name)}"] td.size`);
+  if (cell) cell.textContent = text;
 }
 
 // updateFooter 在状态栏汇总当前目录的路径、文件数、目录数与大小。
@@ -635,7 +819,12 @@ function updateFooter(extra) {
 function renderEntries() {
   const crumbs = document.getElementById('crumbs');
   crumbs.style.display = state.crumbsVisible ? 'flex' : 'none';
+  const tools = document.getElementById('list-tools');
+  if (tools) tools.style.display = state.active ? 'flex' : 'none';
+  applyWindowTitle();
   if (!state.active) {
+    const stat = document.getElementById('filter-stat');
+    if (stat) stat.textContent = '';
     crumbs.innerHTML = '<span>开始使用</span>';
     document.getElementById('entries').innerHTML = `
       <div class="welcome">
@@ -663,7 +852,7 @@ function renderEntries() {
   crumbs.innerHTML = `<a href="#" id="go-up">↑ 上级</a><span class="trail">${trail}</span><span class="abs" title="${esc(absPath)}">${esc(absPath)}</span>`;
   document.getElementById('go-up').onclick = (e) => { e.preventDefault(); goUp(); };
   crumbs.querySelectorAll('a[data-path]').forEach((link) => {
-    link.onclick = (e) => { e.preventDefault(); state.path = link.dataset.path; state.selected = null; loadEntries(); };
+    link.onclick = (e) => { e.preventDefault(); state.path = link.dataset.path; state.selected = null; clearFilter(); loadEntries(); };
   });
   const absEl = crumbs.querySelector('.abs');
   if (absEl && absPath) {
@@ -673,14 +862,24 @@ function renderEntries() {
   }
 
   const host = document.getElementById('entries');
+  const keyword = state.filter.trim().toLowerCase();
+  const visible = sortEntries(keyword
+    ? state.entries.filter((entry) => String(entry.name).toLowerCase().includes(keyword))
+    : state.entries);
+  const stat = document.getElementById('filter-stat');
+  if (stat) stat.textContent = keyword ? `筛选 ${visible.length} / 共 ${state.entries.length} 项` : '';
   if (!state.entries.length) { host.innerHTML = '<div class="empty">此位置没有对象</div>'; return; }
-  const rows = state.entries.map((en) => {
+
+  const nameWidth = loadNameWidth();
+  const totalWidth = nameWidth + COL_SIZE + COL_TIME + COL_OPS;
+  const arrow = (key) => (state.sort.key === key ? (state.sort.dir > 0 ? ' ▲' : ' ▼') : '');
+  const rows = visible.map((en) => {
     const ops = en.isDir
       ? '<button data-op="enter" title="进入">📂</button><button data-op="size" title="统计占用">📊</button>'
       : '<button data-op="preview" title="预览">👁</button><button data-op="download" title="下载">⬇</button><button data-op="info" title="属性">ℹ</button><button data-op="link" title="复制下载链接">🔗</button>';
     const cls = en.isDir ? 'dir' : 'file';
     const icon = en.isDir ? '📁' : '📄';
-    const size = en.isDir ? '' : fmtSize(en.size);
+    const size = en.isDir ? (en.sizeComputed ? fmtSize(en.size) : '') : fmtSize(en.size);
     return `<tr class="row ${cls}" data-name="${esc(en.name)}" data-dir="${en.isDir}">
       <td><span class="icon">${icon}</span>${esc(en.name)}</td>
       <td class="size">${esc(size)}</td>
@@ -688,7 +887,25 @@ function renderEntries() {
       <td class="ops">${ops}</td>
     </tr>`;
   }).join('');
-  host.innerHTML = `<table><thead><tr><th>名称</th><th class="size">大小</th><th class="time">修改时间</th><th class="ops">操作</th></tr></thead><tbody>${rows}</tbody></table>`;
+  const body = rows || `<tr><td colspan="4" class="empty">没有匹配「${esc(state.filter.trim())}」的条目</td></tr>`;
+  host.innerHTML = `<table style="width:max(100%, ${totalWidth}px)">
+    <colgroup><col style="width:${nameWidth}px"><col style="width:${COL_SIZE}px"><col style="width:${COL_TIME}px"><col style="width:${COL_OPS}px"></colgroup>
+    <thead><tr>
+      <th class="sortable" data-sort="name">名称${arrow('name')}<span class="col-resizer" title="拖动调整名称列宽"></span></th>
+      <th class="size sortable" data-sort="size">大小${arrow('size')}</th>
+      <th class="time sortable" data-sort="time">修改时间${arrow('time')}</th>
+      <th class="ops">操作</th>
+    </tr></thead><tbody>${body}</tbody></table>`;
+  host.querySelectorAll('th.sortable').forEach((th) => {
+    th.onclick = () => {
+      const key = th.dataset.sort;
+      if (state.sort.key === key) state.sort.dir = -state.sort.dir;
+      else state.sort = { key, dir: key === 'name' ? 1 : -1 };
+      renderEntries();
+    };
+  });
+  const resizer = host.querySelector('.col-resizer');
+  if (resizer) resizer.onmousedown = startNameResize;
   host.querySelectorAll('tr.row').forEach((row) => {
     row.draggable = true;
     row.ondragstart = (e) => {
@@ -727,25 +944,6 @@ function renderEntries() {
         ? `选中：${name}${picked.isDir ? '（目录）' : '（' + fmtSize(picked.size) + '）'}`
         : (state.multi.size > 1 ? `已选 ${state.multi.size} 项` : undefined));
     };
-    // 文件拖出：按住鼠标开始拖动时先下载到缓存，再交给系统拖放循环拖到资源管理器。
-    row.draggable = true;
-    row.ondragstart = (e) => {
-      const name = row.dataset.name;
-      const isDir = row.dataset.dir === 'true';
-      const prefix = state.active + ':' + (state.path ? state.path + '/' : '');
-      let paths;
-      if (!isDir && state.multi.size > 1 && state.multi.has(name)) {
-        paths = Array.from(state.multi).map((n) => prefix + n);
-      } else {
-        if (isDir) { toast('目录拖出暂不支持，请使用右键「下载目录…」'); e.preventDefault(); return; }
-        paths = [prefix + name];
-      }
-      e.preventDefault();
-      setStatus('正在准备拖拽（下载到本地缓存，请按住鼠标不放）…');
-      api().DragOutFiles(paths)
-        .then((msg) => setStatus(msg))
-        .catch((err) => setStatus('拖拽失败：' + err, true));
-    };
     row.querySelectorAll('button[data-op]').forEach((button) => {
       button.onclick = (e) => {
         e.stopPropagation();
@@ -775,6 +973,7 @@ function renderEntries() {
         items.push({ label: '统计占用…', action: () => showSize(remotePath) });
         items.push({ label: '下载目录…', action: () => downloadFolder(remotePath) });
         if (!state.path) {
+          items.push({ separator: true });
           items.push({ label: '编辑桶策略…', action: () => openPolicy(name) });
           items.push({ label: '新建桶…', action: () => createBucket() });
         }
@@ -782,17 +981,21 @@ function renderEntries() {
         items.push({ label: '预览', action: () => previewEntry(remotePath) });
         items.push({ label: '下载…', action: () => downloadEntry(name) });
         items.push({ label: '编辑文本…', action: () => editText(remotePath) });
+        items.push({ separator: true });
         items.push({ label: '复制下载链接（7 天）', action: () => copyLink(remotePath) });
         items.push({ label: '对象属性…', action: () => showInfo(remotePath) });
         items.push({ label: '设置过期…', action: () => setExpiry(remotePath) });
       }
+      items.push({ separator: true });
       items.push({ label: '复制绝对路径', action: () => copyPath(remotePath, true) });
       items.push({ label: '复制相对路径', action: () => copyPath(remotePath, false) });
+      items.push({ separator: true });
       items.push({ label: '重命名…', action: () => renameEntry(name, isDir) });
       items.push({ label: '新建目录…', action: () => createDir() });
       items.push({ label: '上传文件夹…', action: () => uploadFolder() });
       const drive = mountDriveOf(state.active);
       if (drive) items.push({ label: '在文件管理器中打开', action: () => api().OpenFolder(drive + '\\' + state.path.replace(/\//g, '\\')) });
+      items.push({ separator: true });
       items.push({ label: '删除…', danger: true, action: () => deleteEntry(name, isDir) });
       showMenu(e.clientX, e.clientY, items);
     };
@@ -975,7 +1178,7 @@ function renderLocal() {
   if (!state.local.entries.length) { host.innerHTML = '<div class="empty">空目录</div>'; return; }
   host.innerHTML = state.local.entries.map((entry) => {
     const full = joinLocal(state.local.path, entry.name);
-    return `<div class="lrow ${entry.isDir ? 'dir' : 'file'}" data-dir="${entry.isDir}" data-full="${esc(full)}">
+    return `<div class="lrow ${entry.isDir ? 'dir' : 'file'}" data-dir="${entry.isDir}" data-full="${esc(full)}" data-size="${entry.size || 0}" data-time="${esc(entry.modTime || '')}">
       <span class="icon">${entry.isDir ? '📁' : '📄'}</span>
       <span class="lname" title="${esc(full)}">${esc(entry.name)}</span>
       <span class="lsize">${entry.isDir ? '' : esc(fmtSize(entry.size))}</span>
@@ -987,6 +1190,14 @@ function renderLocal() {
       e.dataTransfer.effectAllowed = 'copy';
       e.dataTransfer.setData('application/x-oss-local', row.dataset.full);
     };
+    // 单击本地项，在状态栏显示完整路径、类型、大小与修改时间。
+    row.onclick = () => {
+      host.querySelectorAll('.lrow').forEach((item) => item.classList.toggle('selected', item === row));
+      const isDir = row.dataset.dir === 'true';
+      const size = Number(row.dataset.size || 0);
+      const kind = isDir ? '目录' : `文件 ${fmtSize(size)}`;
+      setStatus(`本地 · ${row.dataset.full} · ${kind} · 修改时间 ${row.dataset.time || '未知'}`);
+    };
     row.ondblclick = () => {
       if (row.dataset.dir === 'true') navigateLocal(row.dataset.full);
       else api().OpenFolder(row.dataset.full).catch(() => {});
@@ -996,8 +1207,9 @@ function renderLocal() {
       const full = row.dataset.full;
       const isDir = row.dataset.dir === 'true';
       showMenu(e.clientX, e.clientY, [
-        ...(isDir ? [{ label: '进入', action: () => navigateLocal(full) }] : []),
+        ...(isDir ? [{ label: '进入', action: () => navigateLocal(full) }, { separator: true }] : []),
         { label: '上传到当前远程目录', action: () => uploadLocalPath(full) },
+        { separator: true },
         { label: '复制路径', action: () => { api().SetClipboard(full); notify('已复制：' + full); } },
         { label: '在资源管理器中打开', action: () => api().OpenFolder(isDir ? full : dirOf(full)).catch((err) => notify('打开失败：' + err, true)) },
       ]);
@@ -1054,8 +1266,8 @@ async function confirmNet() {
   } catch (err) { notify('连接失败：' + err, true); }
 }
 
-function enterDir(name) { state.selected = null; state.multi.clear(); state.path = state.path ? state.path + '/' + name : name; loadEntries(); }
-function goUp() { state.selected = null; state.multi.clear(); const p = state.path.split('/').filter(Boolean); p.pop(); state.path = p.join('/'); loadEntries(); }
+function enterDir(name) { state.selected = null; state.multi.clear(); clearFilter(); state.path = state.path ? state.path + '/' + name : name; loadEntries(); }
+function goUp() { state.selected = null; state.multi.clear(); clearFilter(); const p = state.path.split('/').filter(Boolean); p.pop(); state.path = p.join('/'); loadEntries(); }
 
 async function mountActive() {
   if (!state.active) { notify('请先选择连接', true); return; }
@@ -1625,7 +1837,7 @@ async function refreshDownloadList() {
       status: task.status,
       size: task.status === 'running' ? `${fmtSize(task.done)} / ${fmtSize(task.total)}` : fmtSize(task.total),
       speed: task.status === 'running' ? `${fmtSize(task.speed)}/s` : '',
-      elapsed: task.status === 'running' ? '已用 ' + fmtElapsed(task.elapsed) : (task.elapsed ? '耗时 ' + fmtElapsed(task.elapsed) : ''),
+      elapsed: task.status === 'running' ? '已用 ' + fmtElapsed(task.elapsedMs) : (task.elapsedMs ? '耗时 ' + fmtElapsed(task.elapsedMs) : ''),
       error: task.error || '',
       remote: task.path || '',
       localPath: task.localPath || '',
@@ -1725,6 +1937,10 @@ function openSettings() {
   document.getElementById('set-cache-age').value = s.vfsCacheMaxAge || '';
   document.getElementById('set-buffer').value = s.bufferSize || '';
   document.getElementById('set-transfers').value = s.maxConcurrentTransfers || 4;
+  document.getElementById('set-streams').value = s.downloadStreams || 4;
+  document.getElementById('set-autosize').checked = s.autoSizeEnabled !== false;
+  document.getElementById('set-autosize-delay').value = s.autoSizeDelay ?? 5;
+  document.getElementById('set-autosize-interval').value = s.autoSizeInterval ?? 2;
   document.getElementById('set-download-dir').value = s.downloadDirectory || '';
   document.getElementById('set-drag-mode').value = s.dragMode || 'panes';
   document.getElementById('settings-dialog').showModal();
@@ -1761,6 +1977,10 @@ async function saveSettings() {
     vfsCacheMaxAge: document.getElementById('set-cache-age').value.trim(),
     bufferSize: document.getElementById('set-buffer').value.trim(),
     maxConcurrentTransfers: parseInt(document.getElementById('set-transfers').value, 10) || 4,
+    downloadStreams: Math.min(16, Math.max(1, parseInt(document.getElementById('set-streams').value, 10) || 4)),
+    autoSizeEnabled: document.getElementById('set-autosize').checked,
+    autoSizeDelay: Math.min(60, Math.max(0, parseInt(document.getElementById('set-autosize-delay').value, 10) || 0)),
+    autoSizeInterval: Math.min(60, Math.max(0, parseInt(document.getElementById('set-autosize-interval').value, 10) || 0)),
     downloadDirectory: document.getElementById('set-download-dir').value.trim(),
     dragMode: document.getElementById('set-drag-mode').value,
   };

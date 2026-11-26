@@ -28,8 +28,12 @@ export namespace config {
 	    vfsCacheMaxAge: string;
 	    bufferSize: string;
 	    maxConcurrentTransfers: number;
+	    downloadStreams: number;
 	    downloadDirectory: string;
 	    dragMode: string;
+	    autoSizeEnabled: boolean;
+	    autoSizeDelay: number;
+	    autoSizeInterval: number;
 	    serverModtimeRemotes: string[];
 	
 	    static createFrom(source: any = {}) {
@@ -47,8 +51,12 @@ export namespace config {
 	        this.vfsCacheMaxAge = source["vfsCacheMaxAge"];
 	        this.bufferSize = source["bufferSize"];
 	        this.maxConcurrentTransfers = source["maxConcurrentTransfers"];
+	        this.downloadStreams = source["downloadStreams"];
 	        this.downloadDirectory = source["downloadDirectory"];
 	        this.dragMode = source["dragMode"];
+	        this.autoSizeEnabled = source["autoSizeEnabled"];
+	        this.autoSizeDelay = source["autoSizeDelay"];
+	        this.autoSizeInterval = source["autoSizeInterval"];
 	        this.serverModtimeRemotes = source["serverModtimeRemotes"];
 	    }
 	}

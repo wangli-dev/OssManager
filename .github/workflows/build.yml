@@ -1,0 +1,74 @@
+name: 构建与发布
+
+# 推送 v* 标签时自动打包并发布 Release；也可以在 Actions 页面手动触发。
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: 安装 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: 安装 Wails CLI
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.17.1
+
+      # cmount 标签需要 CGO 与 WinFsp SDK；用 msiexec /a 解包官方安装包即可拿到 inc/lib。
+      - name: 准备 WinFsp SDK
+        shell: pwsh
+        run: |
+          $url = 'https://github.com/winfsp/winfsp/releases/download/v2.0/winfsp-2.0.23075.msi'
+          $msi = Join-Path $env:RUNNER_TEMP 'winfsp.msi'
+          Invoke-WebRequest -Uri $url -OutFile $msi
+          $target = Join-Path $env:RUNNER_TEMP 'winfsp'
+          Start-Process msiexec.exe -Wait -ArgumentList "/a `"$msi`" /qn TARGETDIR=`"$target`""
+          $sdk = Join-Path $target 'DYNAMIC'
+          for ($i = 0; $i -lt 60 -and !(Test-Path (Join-Path $sdk 'inc\fuse')); $i++) { Start-Sleep -Seconds 1 }
+          if (!(Test-Path (Join-Path $sdk 'inc\fuse'))) { throw "WinFsp SDK 解包失败：$sdk" }
+          Add-Content -Path $env:GITHUB_ENV -Value "WINFSP_SDK=$sdk" -Encoding ascii
+
+      - name: 构建 EXE
+        shell: pwsh
+        run: |
+          # MSYS2 自带的 gcc 提供 CGO 工具链
+          $env:PATH = "C:\msys64\ucrt64\bin;C:\msys64\usr\bin;$env:PATH"
+          $env:PATH = "$(go env GOPATH)\bin;$env:PATH"
+          $env:CGO_ENABLED = '1'
+          $env:CGO_CFLAGS = "-I$env:WINFSP_SDK\inc\fuse"
+          $env:CGO_LDFLAGS = "-L$env:WINFSP_SDK\lib -lwinfsp-x64"
+          # 跳过绑定生成：仓库内已提交前端绑定，运行时绑定由 Wails 反射生成
+          wails build -m -skipbindings -tags cmount -o OssManager.exe
+          if (!(Test-Path 'build\bin\OssManager.exe')) { throw '构建产物不存在' }
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: OssManager-windows-amd64
+          path: build/bin/OssManager.exe
+
+      - name: 发布 Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: build/bin/OssManager.exe
+          generate_release_notes: true
