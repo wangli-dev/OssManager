@@ -18,6 +18,99 @@ const state = {
 
 let dragName = null;
 
+// 远程侧多标签：每个打开的连接保留独立会话（路径、列表、选中、错误、滚动位置）。
+const tabCache = {};
+const tabOrder = [];
+
+function cacheOf(name) {
+  if (!tabCache[name]) {
+    tabCache[name] = { path: '', entries: [], selected: null, multi: [], error: null, scrollTop: 0, loaded: false };
+    tabOrder.push(name);
+  }
+  return tabCache[name];
+}
+
+function saveActiveTab() {
+  if (!state.active) return;
+  const c = cacheOf(state.active);
+  c.path = state.path;
+  c.entries = state.entries;
+  c.selected = state.selected;
+  c.multi = Array.from(state.multi);
+  const el = document.getElementById('entries');
+  c.scrollTop = el ? el.scrollTop : 0;
+}
+
+function restoreActiveTab() {
+  const c = cacheOf(state.active);
+  state.path = c.path;
+  state.entries = c.entries;
+  state.selected = c.selected;
+  state.multi = new Set(c.multi);
+  if (c.error) showBrowseError(c.error.remote, c.error.err);
+  else renderEntries();
+  const el = document.getElementById('entries');
+  if (el) el.scrollTop = c.scrollTop;
+}
+
+function renderTabs() {
+  const host = document.getElementById('tabs');
+  if (!host) return;
+  host.innerHTML = tabOrder.map((name) => {
+    const conn = state.connections.find((c) => c.name === name);
+    const label = conn ? (conn.displayName || name) : name;
+    return `<div class="tab${name === state.active ? ' active' : ''}" data-name="${esc(name)}" title="${esc(label)}"><span class="tab-label">${esc(label)}</span><span class="tab-close" data-close="${esc(name)}" title="关闭">×</span></div>`;
+  }).join('');
+  host.querySelectorAll('.tab').forEach((node) => {
+    node.onclick = (e) => {
+      const closeName = e.target.dataset && e.target.dataset.close;
+      if (closeName) { closeTab(closeName); return; }
+      openTab(node.dataset.name);
+    };
+  });
+}
+
+function openTab(name) {
+  if (!name) return;
+  if (state.active === name) { renderTabs(); return; }
+  saveActiveTab();
+  state.active = name;
+  state.selected = null;
+  state.multi.clear();
+  restoreActiveTab();
+  renderConnections();
+  renderTabs();
+  const c = cacheOf(name);
+  if (c.loaded) updateFooter();
+  else loadEntries();
+}
+
+function closeTab(name) {
+  const idx = tabOrder.indexOf(name);
+  if (idx >= 0) tabOrder.splice(idx, 1);
+  delete tabCache[name];
+  if (state.active === name) {
+    state.active = null;
+    state.path = ''; state.entries = []; state.selected = null; state.multi.clear();
+    const next = tabOrder[tabOrder.length - 1];
+    if (next) openTab(next);
+    else { renderTabs(); renderEntries(); updateFooter(); }
+  } else {
+    renderTabs();
+  }
+}
+
+function pruneTabs(aliveNames) {
+  for (const name of [...tabOrder]) {
+    if (!aliveNames.has(name)) {
+      const idx = tabOrder.indexOf(name);
+      if (idx >= 0) tabOrder.splice(idx, 1);
+      delete tabCache[name];
+    }
+  }
+  renderTabs();
+}
+
 const app = document.getElementById('app');
 let statusEl;
 let menuEl;
@@ -126,6 +219,7 @@ function renderShell() {
       </section>
       <div class="resizer" data-target="local-pane" title="拖动调整宽度"></div>
       <section class="files">
+        <div id="tabs"></div>
         <div class="crumbs" id="crumbs"></div>
         <div id="entries"></div>
       </section>
@@ -361,6 +455,7 @@ function renderShell() {
 
 async function boot() {
   renderShell();
+  renderTabs();
   if (window.runtime && window.runtime.EventsOn) {
     window.runtime.EventsOn('mounts-changed', () => { refresh(); });
   }
@@ -387,6 +482,7 @@ async function refresh() {
     if (state.active && !state.connections.some((c) => c.name === state.active)) {
       state.active = null; state.path = ''; state.entries = [];
     }
+    pruneTabs(new Set(state.connections.map((c) => c.name)));
     renderConnections();
     renderEntries();
     setStatus(`共 ${state.connections.length} 个连接`);
@@ -449,8 +545,7 @@ function renderConnections() {
 }
 
 async function selectConnection(name) {
-  state.active = name; state.path = ''; state.selected = null; state.multi.clear(); state.entries = [];
-  renderConnections(); await loadEntries();
+  openTab(name);
 }
 
 // 在文件列表区渲染错误卡片：友好分类 + 原始错误 + 重试按钮。
@@ -481,7 +576,10 @@ async function loadEntries() {
     const entries = (await api().List(remote)) || [];
     if (seq !== browseSeq || state.active !== reqName) return;
     state.entries = entries;
+    const c = cacheOf(reqName);
+    c.entries = entries; c.path = state.path; c.loaded = true; c.error = null;
     renderEntries();
+    renderTabs();
     updateFooter();
   } catch (err) {
     if (seq !== browseSeq || state.active !== reqName) {
@@ -491,8 +589,11 @@ async function loadEntries() {
     }
     // 失败不再渲染空表（看起来像正常），改为列表区显示错误卡片并给出分类提示。
     state.entries = [];
+    const c = cacheOf(reqName);
+    c.error = { remote, err }; c.loaded = true;
     renderEntries();
     showBrowseError(remote, err);
+    renderTabs();
     const hint = describeError(err);
     setStatus(hint || ('读取失败：' + err), true);
   }
@@ -1015,7 +1116,18 @@ async function deleteConnection(name) {
 async function renameConnection(name) {
   const next = prompt('新的内部名称', name);
   if (!next || next === name) return;
-  try { await api().RenameConnection(name, next.trim()); await refresh(); notify('已改名'); }
+  try {
+    const finalName = next.trim();
+    await api().RenameConnection(name, finalName);
+    if (tabCache[name]) {
+      tabCache[finalName] = tabCache[name];
+      delete tabCache[name];
+      const idx = tabOrder.indexOf(name);
+      if (idx >= 0) tabOrder[idx] = finalName;
+      if (state.active === name) state.active = finalName;
+    }
+    await refresh(); notify('已改名');
+  }
   catch (err) { setStatus('改名失败：' + err, true); }
 }
 
