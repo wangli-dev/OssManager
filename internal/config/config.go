@@ -24,6 +24,7 @@ type Settings struct {
 	AutoSizeEnabled        bool     `json:"autoSizeEnabled"`
 	AutoSizeDelay          int      `json:"autoSizeDelay"`
 	AutoSizeInterval       int      `json:"autoSizeInterval"`
+	StartupView            string   `json:"startupView"`
 	ServerModtimeRemotes   []string `json:"serverModtimeRemotes"`
 }
 
@@ -128,6 +129,9 @@ func LoadSettings() Settings {
 	}
 	if value.AutoSizeInterval < 0 {
 		value.AutoSizeInterval = 0
+	}
+	if value.StartupView != "last" {
+		value.StartupView = "home"
 	}
 	// 数据目录没有设置文件时立即落盘一份，保证配置文件固定与 exe 同目录。
 	if _, err := os.Stat(SettingsPath()); err != nil {

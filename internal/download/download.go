@@ -86,6 +86,26 @@ func Add(remotePath, localPath string, size int64) {
 	saveLocked(records)
 }
 
+// RemoveByLocal 删除所有指向该本地路径的记录，返回删除条数。
+func RemoveByLocal(localPath string) int {
+	mu.Lock()
+	defer mu.Unlock()
+	records := readLocked()
+	kept := make([]Record, 0, len(records))
+	removed := 0
+	for _, record := range records {
+		if record.LocalPath == localPath {
+			removed++
+			continue
+		}
+		kept = append(kept, record)
+	}
+	if removed > 0 {
+		saveLocked(kept)
+	}
+	return removed
+}
+
 // Clear 清空下载记录。
 func Clear() error {
 	mu.Lock()

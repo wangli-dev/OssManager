@@ -101,6 +101,33 @@ func splitRemote(remotePath string) (string, string) {
 	return remotePath[:index], remotePath[index+1:]
 }
 
+// CopyRemote 把远程对象复制到另一个远程目录，支持跨连接复制。
+func CopyRemote(ctx context.Context, confPath, srcPath, dstDir string) (string, error) {
+	if err := ensureConfig(confPath); err != nil {
+		return "", err
+	}
+	parent, name := splitRemote(srcPath)
+	if name == "" {
+		return "", os.ErrInvalid
+	}
+	srcFs, err := rclonefs.NewFs(ctx, confPath, parent)
+	if err != nil {
+		return "", err
+	}
+	srcObj, err := srcFs.NewObject(ctx, name)
+	if err != nil {
+		return "", err
+	}
+	dstFs, err := rclonefs.NewFs(ctx, confPath, dstDir)
+	if err != nil {
+		return "", err
+	}
+	if _, err := operations.Copy(ctx, dstFs, nil, name, srcObj); err != nil {
+		return "", err
+	}
+	return dstDir + "/" + name, nil
+}
+
 // Download 把远程对象下载到本地目录，返回本地完整路径。
 func Download(ctx context.Context, confPath, remotePath, localDir string) (string, error) {
 	if err := ensureConfig(confPath); err != nil {

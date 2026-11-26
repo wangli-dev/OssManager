@@ -93,4 +93,4 @@ frontend               Wails 前端（Vite + 原生 JS）
 
 ## 许可
 
-[MIT](LICENSE)。rclone 同样遵循 MIT License。
+本项目使用 [MIT](LICENSE) 许可。程序静态链接了 rclone（MIT）等第三方组件，许可均与本项目兼容；分发二进制时请保留 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) 中的声明。

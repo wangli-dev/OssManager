@@ -31,7 +31,7 @@ import (
 	"OssManager/internal/transfer"
 )
 
-const appVersion = "1.3.0"
+const appVersion = "1.3.1"
 
 func logf(format string, args ...interface{}) {
 	_ = os.MkdirAll(config.DataDir(), 0o755)
@@ -225,6 +225,7 @@ func (a *App) GetConnection(name string) (remote.Definition, error) {
 		Endpoint:    firstOption(options, "endpoint", "url", "host"),
 		Region:      options["region"],
 		Account:     firstOption(options, "access_key_id", "user"),
+		Secret:      firstOption(options, "secret_access_key", "pass"),
 	}
 	kind := options["type"]
 	provider := options["provider"]
@@ -520,6 +521,25 @@ func (a *App) Download(remotePath, localDir string) (string, error) {
 	}
 	download.Add(remotePath, local, size)
 	return local, nil
+}
+
+// RemoveDownload 删除一条下载记录；deleteFile 为真时同时删除本地文件或目录。
+func (a *App) RemoveDownload(localPath string, deleteFile bool) error {
+	removed := download.RemoveByLocal(localPath)
+	if deleteFile && localPath != "" {
+		if err := os.RemoveAll(localPath); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	if removed == 0 && !deleteFile {
+		return fmt.Errorf("没有找到下载记录")
+	}
+	return nil
+}
+
+// CopyRemote 把远程对象复制到另一个远程目录，支持跨连接与跨页签。
+func (a *App) CopyRemote(srcPath, dstDir string) (string, error) {
+	return transfer.CopyRemote(a.ctx, a.settings.RcloneConfig, srcPath, dstDir)
 }
 
 // DownloadTasks 返回正在下载与最近完成的下载任务。

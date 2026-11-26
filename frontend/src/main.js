@@ -60,6 +60,80 @@ function restoreActiveTab() {
   if (el) el.scrollTop = c.scrollTop;
 }
 
+const SESSION_KEY = 'ossmanager.session';
+const WINDOW_KEY = 'ossmanager.windowSize';
+let sessionReady = false;
+
+function saveSession() {
+  if (!sessionReady) return;
+  try {
+    const tabs = tabOrder.map((name) => ({
+      name,
+      path: name === state.active ? state.path : (cacheOf(name).path || ''),
+    }));
+    localStorage.setItem(SESSION_KEY, JSON.stringify({
+      tabs,
+      active: state.active,
+      activePath: state.path,
+      view: state.view,
+      localTab: state.localTab,
+      localViewPath: state.localView.path,
+    }));
+  } catch (err) { /* 存储失败不影响使用 */ }
+}
+
+// restoreSession 按上次关闭时的页签与视图恢复；无有效会话时返回 false。
+function restoreSession() {
+  let data = null;
+  try { data = JSON.parse(localStorage.getItem(SESSION_KEY) || 'null'); } catch (err) { data = null; }
+  if (!data) return false;
+  (data.tabs || []).forEach((tab) => {
+    if (!tab || !tab.name || tabOrder.includes(tab.name)) return;
+    if (!state.connections.some((connection) => connection.name === tab.name)) return;
+    const cached = cacheOf(tab.name);
+    cached.path = tab.path || '';
+    cached.loaded = false;
+  });
+  if (data.localTab && data.localTab.path) {
+    state.localTab = { path: data.localTab.path, label: data.localTab.label || '本地文件' };
+    state.localView = { path: data.localViewPath || data.localTab.path, entries: [], error: '' };
+  }
+  state.view = data.view === 'local' && state.localTab ? 'local' : 'remote';
+  if (state.view === 'remote' && data.active && tabOrder.includes(data.active)) {
+    state.active = data.active;
+    state.path = data.activePath || '';
+  }
+  renderTabs();
+  renderConnections();
+  if (state.view === 'local') { loadLocalView(state.localView.path); return true; }
+  if (state.active) { loadEntries(); return true; }
+  return false;
+}
+
+function restoreWindowSize() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(WINDOW_KEY) || 'null');
+    if (saved && saved.w > 600 && saved.h > 400 && window.runtime && window.runtime.WindowSetSize) {
+      window.runtime.WindowSetSize(saved.w, saved.h);
+    }
+  } catch (err) { /* 忽略 */ }
+}
+
+function bindWindowSize() {
+  let timer = null;
+  window.addEventListener('resize', () => {
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(async () => {
+      try {
+        const size = window.runtime && window.runtime.WindowGetSize ? await window.runtime.WindowGetSize() : null;
+        const w = size ? size.w : window.outerWidth;
+        const h = size ? size.h : window.outerHeight;
+        localStorage.setItem(WINDOW_KEY, JSON.stringify({ w, h }));
+      } catch (err) { /* 忽略 */ }
+    }, 500);
+  });
+}
+
 function renderTabs() {
   const host = document.getElementById('tabs');
   if (!host) return;
@@ -73,6 +147,7 @@ function renderTabs() {
     const active = state.view === 'local';
     html += `<div class="tab${active ? ' active' : ''}" data-local-tab="1" title="${esc(state.localTab.path)}"><span class="tab-label">${esc(state.localTab.label)}</span><span class="tab-close" data-close-local="1" title="关闭">×</span></div>`;
   }
+  html += '<button id="tab-add" class="tab-add" title="打开连接 / 新建连接">+</button>';
   host.innerHTML = html;
   host.querySelectorAll('.tab').forEach((node) => {
     node.onclick = (e) => {
@@ -82,6 +157,61 @@ function renderTabs() {
       openTab(node.dataset.name);
     };
   });
+  document.getElementById('tab-add').onclick = (e) => { e.stopPropagation(); openTabAddMenu(e); };
+  updateTabActions();
+  saveSession();
+}
+
+// 上传/下载属于当前页签的操作，只放在页签栏右侧。
+function updateTabActions() {
+  const remote = state.view === 'remote' && !!state.active;
+  const upload = document.getElementById('btn-upload');
+  const download = document.getElementById('btn-download');
+  if (upload) upload.style.display = remote ? '' : 'none';
+  if (download) download.style.display = remote ? '' : 'none';
+}
+
+function openTabAddMenu(event) {
+  const rect = event.currentTarget.getBoundingClientRect();
+  const items = state.connections.map((conn) => ({
+    label: `${conn.displayName || conn.name}（${conn.type || ''}）`,
+    action: () => openTab(conn.name),
+  }));
+  if (items.length) items.push({ separator: true });
+  items.push({ label: '本地文件…', action: () => openLocalTab(state.local.path || 'C:\\', '本地文件') });
+  visibleShares().forEach((share) => {
+    items.push({ label: `共享：${shareLabel(share)}`, action: () => openLocalTab(share.local || share.remote, shareLabel(share)) });
+  });
+  items.push({ separator: true });
+  items.push({ label: '新建连接…', action: () => openEdit(null) });
+  items.push({ label: '添加网络共享…', action: openNetDialog });
+  showMenu(rect.left, rect.bottom + 4, items);
+}
+
+function openMoreMenu(event) {
+  event.stopPropagation();
+  const rect = event.currentTarget.getBoundingClientRect();
+  showMenu(rect.left, rect.bottom + 4, [
+    { label: '下载记录…', action: openHistory },
+    { label: '导入连接…', action: importJson },
+    { label: '导出连接…', action: exportJson },
+    { separator: true },
+    { label: '切换主题', action: toggleTheme },
+    { separator: true },
+    { label: '关于…', action: openAbout },
+    { label: '设置…', action: openSettings },
+  ]);
+}
+
+function refreshCurrentView() {
+  if (state.view === 'local' && state.localTab) {
+    loadLocalView(state.localView.path);
+    return;
+  }
+  if (state.active) {
+    showBrowseLoading(state.active + ':' + state.path);
+    loadEntries();
+  }
 }
 
 function openTab(name) {
@@ -115,7 +245,6 @@ function openTab(name) {
   renderConnections();
   renderTabs();
   toggleConnPopover(false);
-  if (!state.connCollapsed) toggleConnPane(true);
   if (c.loaded) updateFooter();
   else loadEntries();
 }
@@ -305,29 +434,22 @@ document.addEventListener('click', (e) => {
 function renderShell() {
   app.innerHTML = `
     <header>
-      <button id="conn-quick" class="conn-quick" title="选择连接" style="display:none">选择连接 ▾</button>
-      <button id="conn-add" class="primary" title="新建连接 / 添加网络共享" style="display:none">+</button>
-      <button id="conn-expand" title="展开连接栏" style="display:none">»</button>
-      <button id="btn-mount">挂载</button>
-      <button id="btn-unmount">卸载</button>
-      <span class="tool-sep"></span>
-      <button id="btn-upload">上传</button>
-      <button id="btn-download">下载</button>
-      <button id="btn-history">下载记录</button>
-      <div class="actions">
-        <span class="tool-sep"></span>
-        <button id="btn-local">本地栏</button>
-        <span class="tool-sep"></span>
-        <button id="btn-import">导入</button>
-        <button id="btn-export">导出</button>
-        <span class="tool-sep"></span>
-        <button id="btn-theme">主题</button>
-        <button id="btn-about">关于</button>
-        <button id="btn-settings">设置</button>
+      <div class="header-side"></div>
+      <div class="header-center">
+        <button id="conn-quick" class="conn-quick" title="选择连接">选择连接 ▾</button>
+        <button id="conn-add" class="primary" title="新建连接 / 添加网络共享">+</button>
+      </div>
+      <div class="header-right">
+        <button id="btn-more">更多 ▾</button>
       </div>
     </header>
     <main>
-      <aside id="conn-pane"><div class="list-head"><span class="list-title">连接</span><span class="list-tools-inline"><button id="btn-refresh" title="刷新连接列表">⟳</button><button id="btn-new" class="primary" title="新建连接 / 添加网络共享">+</button><button id="conn-collapse" title="收起连接栏">«</button></span></div><div id="connections"></div></aside>
+      <div id="conn-handle-open" class="conn-handle open" title="展开连接栏" style="display:none">›</div>
+      <aside id="conn-pane">
+        <div class="list-head"><span class="list-title">连接</span><span class="list-tools-inline"><button id="btn-refresh" title="刷新连接列表">⟳</button></span></div>
+        <div id="connections"></div>
+        <div id="conn-handle" class="conn-handle" title="收起连接栏">‹</div>
+      </aside>
       <div class="resizer" data-target="conn-pane" title="拖动调整宽度"></div>
       <section class="local" id="local-pane">
         <div class="pane-head">
@@ -343,12 +465,19 @@ function renderShell() {
       </section>
       <div class="resizer" data-target="local-pane" title="拖动调整宽度"></div>
       <section class="files">
-        <div id="tabs"></div>
+        <div class="tabbar">
+          <div id="tabs"></div>
+          <div class="tab-actions">
+            <button id="btn-upload" title="上传到当前页签">上传</button>
+            <button id="btn-download" title="下载当前选中的文件">下载</button>
+          </div>
+        </div>
         <div class="crumbs" id="crumbs">
           <div class="crumb-nav" id="crumb-nav"></div>
           <button id="btn-autosize" class="chip" style="display:none">目录大小</button>
           <input id="filter-input" placeholder="筛选当前目录（名称包含关键字）" />
           <span id="filter-stat"></span>
+          <button id="btn-list-refresh" class="icon-btn" title="刷新当前目录">⟳</button>
         </div>
         <div id="entries"></div>
       </section>
@@ -376,6 +505,7 @@ function renderShell() {
         <button id="edit-secret-eye" type="button" title="显示/隐藏密钥">👁</button>
       </div>
       <label>区域（可空）</label><input id="edit-region" />
+      <label class="chk" id="edit-mount-row"><input type="checkbox" id="edit-mount" /> 保存后挂载到盘符（名称默认使用连接名称）</label>
       <div class="footer">
         <button id="edit-test">测试连接</button>
         <button id="edit-cancel">取消</button>
@@ -418,6 +548,12 @@ function renderShell() {
     </dialog>
     <dialog id="settings-dialog" class="settings">
       <h2>设置</h2>
+      <h3>启动</h3>
+      <label>启动时显示</label>
+      <select id="set-startup-view">
+        <option value="home">首页</option>
+        <option value="last">上次关闭时的画面</option>
+      </select>
       <h3>连接与文件</h3>
       <label>rclone 配置文件</label><input id="set-config" />
       <label>文件管理器（留空自动探测）</label><input id="set-filemanager" />
@@ -561,33 +697,21 @@ function renderShell() {
       { label: '添加网络共享…', action: openNetDialog },
     ]);
   };
-  document.getElementById('btn-new').onclick = openCreateMenu;
   document.getElementById('conn-add').onclick = openCreateMenu;
   document.getElementById('btn-autosize').onclick = toggleAutoSize;
-  document.getElementById('conn-collapse').onclick = () => toggleConnPane(true);
-  document.getElementById('conn-expand').onclick = () => toggleConnPane(false);
   document.getElementById('conn-quick').onclick = (e) => {
     e.stopPropagation();
     toggleConnPopover();
   };
+  document.getElementById('conn-handle').onclick = () => toggleConnPane(true);
+  document.getElementById('conn-handle-open').onclick = () => toggleConnPane(false);
+  document.getElementById('btn-more').onclick = openMoreMenu;
   state.connCollapsed = localStorage.getItem('ossmanager.connCollapsed') === '1';
   applyConnCollapsed();
   document.getElementById('btn-refresh').onclick = refresh;
-  document.getElementById('btn-mount').onclick = mountActive;
-  document.getElementById('btn-unmount').onclick = unmountActive;
+  document.getElementById('btn-list-refresh').onclick = refreshCurrentView;
   document.getElementById('btn-upload').onclick = uploadFile;
   document.getElementById('btn-download').onclick = downloadSelected;
-  document.getElementById('btn-import').onclick = importJson;
-  document.getElementById('btn-export').onclick = exportJson;
-  document.getElementById('btn-theme').onclick = toggleTheme;
-  document.getElementById('btn-about').onclick = openAbout;
-  document.getElementById('btn-settings').onclick = openSettings;
-  document.getElementById('btn-history').onclick = openHistory;
-  document.getElementById('btn-local').onclick = () => {
-    if (state.localTab) activateLocalTab();
-    else openLocalTab(state.local.path || 'C:\\', '本地文件');
-    toggleConnPane(true);
-  };
   document.getElementById('local-up').onclick = localUp;
   document.getElementById('local-hide').onclick = () => toggleLocal(false);
   document.getElementById('local-edit').onclick = editLocalPath;
@@ -656,9 +780,14 @@ async function boot() {
     applyTheme();
     await refresh();
     await initLocal();
-    // 启动/开始页面总是展示连接列表；打开连接后会自动收起。
+    restoreWindowSize();
+    bindWindowSize();
+    // 启动时展示连接列表；之后由用户通过边缘手柄收起。
     state.connCollapsed = false;
     applyConnCollapsed();
+    if (state.settings && state.settings.startupView === 'last') restoreSession();
+    sessionReady = true;
+    saveSession();
   } catch (err) { setStatus('启动失败：' + err, true); }
 }
 
@@ -695,12 +824,42 @@ function visibleShares() {
   });
 }
 
+// 网络共享的显示名：默认与本地映射盘一致（共享名 + 盘符），可自定义别名。
+function shareAliases() {
+  try {
+    return JSON.parse(localStorage.getItem('ossmanager.shareNames') || '{}') || {};
+  } catch (err) {
+    return {};
+  }
+}
+
+function shareLabel(share) {
+  const alias = shareAliases()[share.remote];
+  if (alias) return alias;
+  const drive = String(share.local || '').replace(/\\$/, '');
+  const base = String(share.remote || '').split('\\').filter(Boolean).pop() || share.remote;
+  return drive ? `${base} (${drive})` : base;
+}
+
+async function renameShare(share) {
+  const aliases = shareAliases();
+  const next = await askInput('共享显示名称', aliases[share.remote] || shareLabel(share));
+  if (!next) return;
+  aliases[share.remote] = next;
+  localStorage.setItem('ossmanager.shareNames', JSON.stringify(aliases));
+  if (state.localTab && (state.localTab.path === share.local || state.localTab.path === share.remote)) {
+    state.localTab.label = next;
+  }
+  renderTabs();
+  renderConnections();
+}
+
 function connectionListHTML() {
   const localRows = `<div class="conn local-entry" data-local="1" title="打开本地文件栏">
       <span class="title"><span class="name">本地文件</span><span class="badge type">本地</span></span>
       <span class="badge">${esc(state.local.path || '')}</span></div>`
     + visibleShares().map((share) => `<div class="conn local-entry" data-share="${esc(share.remote)}" title="${esc(share.remote)}">
-      <span class="title"><span class="name">${esc(share.remote)}</span><span class="badge type">网络</span></span>
+      <span class="title"><span class="name">${esc(shareLabel(share))}</span><span class="badge type">网络</span></span>
       ${share.local ? `<span class="badge">${esc(share.local.replace(/\\$/, ''))}</span>` : ''}</div>`).join('');
   const connections = state.connections.map((c) => {
     const drive = mountDriveOf(c.name);
@@ -716,6 +875,26 @@ function connectionListHTML() {
 function bindConnectionList(host) {
   host.querySelectorAll('.conn.local-entry').forEach((node) => {
     node.onclick = () => openLocalEntry(node);
+    node.oncontextmenu = (e) => {
+      const remote = node.dataset.share;
+      e.preventDefault();
+      if (!remote) {
+        showMenu(e.clientX, e.clientY, [
+          { label: '打开本地文件', action: () => openLocalEntry(node) },
+          { separator: true },
+          { label: '刷新映射', action: refresh },
+        ]);
+        return;
+      }
+      const share = state.shares.find((item) => item.remote === remote) || { remote, local: '' };
+      showMenu(e.clientX, e.clientY, [
+        { label: '重命名显示…', action: () => renameShare(share) },
+        { label: '在资源管理器中打开', action: () => api().OpenFolder(share.local || share.remote).catch((err) => notify('打开失败：' + err, true)) },
+        { label: '复制路径', action: () => { api().SetClipboard(share.remote); notify('已复制：' + share.remote); } },
+        { separator: true },
+        { label: '刷新映射', action: refresh },
+      ]);
+    };
   });
   host.querySelectorAll('.conn[data-name]').forEach((node) => {
     node.onclick = () => selectConnection(node.dataset.name);
@@ -808,16 +987,12 @@ function applyConnCollapsed() {
   const collapsed = !!state.connCollapsed;
   const pane = document.getElementById('conn-pane');
   const bar = document.querySelector('.resizer[data-target="conn-pane"]');
-  const quick = document.getElementById('conn-quick');
-  const add = document.getElementById('conn-add');
-  const expand = document.getElementById('conn-expand');
+  const handleOpen = document.getElementById('conn-handle-open');
   if (pane) pane.style.display = collapsed ? 'none' : '';
   if (bar) bar.style.display = collapsed ? 'none' : '';
-  if (quick) quick.style.display = collapsed ? '' : 'none';
-  if (add) add.style.display = collapsed ? '' : 'none';
-  if (expand) expand.style.display = collapsed ? '' : 'none';
+  if (handleOpen) handleOpen.style.display = collapsed ? '' : 'none';
   localStorage.setItem('ossmanager.connCollapsed', collapsed ? '1' : '0');
-  if (collapsed) renderConnQuick();
+  renderConnQuick();
 }
 
 async function selectConnection(name) {
@@ -830,11 +1005,12 @@ function openLocalEntry(node) {
   toggleConnPopover(false);
   if (share) {
     const mapped = state.shares.find((item) => item.remote === share);
-    openLocalTab((mapped && mapped.local) || share, share);
+    const target = mapped || { remote: share, local: '' };
+    openLocalTab((mapped && mapped.local) || share, shareLabel(target));
   } else {
     openLocalTab(state.local.path || state.local.drives[0]?.root || 'C:\\', '本地文件');
   }
-  toggleConnPane(true);
+  toggleConnPopover(false);
 }
 
 // openLocalTab 打开本地目录页签；与远程页签共用标签栏与文件区。
@@ -886,6 +1062,7 @@ async function loadLocalView(path) {
     state.localView.error = String(err);
   }
   if (state.view === 'local') renderEntries();
+  saveSession();
 }
 
 function localViewUp() {
@@ -903,10 +1080,24 @@ function renderLocalView() {
   if (autoBtn) autoBtn.style.display = 'none';
   applyWindowTitle();
   const nav = document.getElementById('crumb-nav');
-  nav.innerHTML = `<a href="#" id="local-view-up" title="上级目录">↑</a><span class="trail"><b>${esc(state.localTab.label)}</b> ${esc(state.localView.path)}</span>`;
+  const drives = state.local.drives || [];
+  const currentRoot = /^[A-Za-z]:[\\/]/.test(state.localView.path) ? state.localView.path.slice(0, 3) : '';
+  const driveOptions = drives.map((drive) => {
+    const root = drive.root;
+    const letter = root.charAt(0).toUpperCase();
+    const label = drive.label && drive.label !== letter ? `${root} ${drive.label}` : root;
+    const selected = root.toUpperCase() === currentRoot.toUpperCase() ? ' selected' : '';
+    return `<option value="${esc(root)}"${selected}>${esc(label)}</option>`;
+  }).join('');
+  const driveSelect = drives.length ? `<select id="local-view-drive" class="drive-select" title="选择磁盘">${driveOptions}</select>` : '';
+  nav.innerHTML = `<a href="#" id="local-view-up" title="上级目录">↑</a>${driveSelect}<span class="trail"><b>${esc(state.localTab.label)}</b> ${esc(state.localView.path)}</span>`;
   document.getElementById('local-view-up').onclick = (e) => { e.preventDefault(); localViewUp(); };
+  const driveInput = document.getElementById('local-view-drive');
+  if (driveInput) driveInput.onchange = (e) => loadLocalView(e.target.value);
 
   const host = document.getElementById('entries');
+  // 双击空白处返回上一级。
+  host.ondblclick = (e) => { if (e.target.closest && e.target.closest('tr.row')) return; localViewUp(); };
   const stat = document.getElementById('filter-stat');
   if (state.localView.error) {
     if (stat) stat.textContent = '';
@@ -1150,6 +1341,8 @@ function renderEntries() {
   });
 
   const host = document.getElementById('entries');
+  // 双击空白处返回上一级。
+  host.ondblclick = (e) => { if (e.target.closest && e.target.closest('tr.row')) return; goUp(); };
   const keyword = state.filter.trim().toLowerCase();
   const visible = sortEntries(keyword
     ? state.entries.filter((entry) => String(entry.name).toLowerCase().includes(keyword))
@@ -1164,7 +1357,7 @@ function renderEntries() {
   const rows = visible.map((en) => {
     const ops = en.isDir
       ? '<button data-op="size" title="统计占用">📊</button>'
-      : '<button data-op="preview" title="预览">👁</button><button data-op="download" title="下载">⬇</button><button data-op="tolocal" title="下载到本地栏">⇥</button><button data-op="info" title="属性">ℹ</button>';
+      : '<button data-op="preview" title="预览">👁</button><button data-op="download" title="下载">⬇</button><button data-op="tolocal" title="下载到其他页签">⇥</button><button data-op="info" title="属性">ℹ</button>';
     const cls = en.isDir ? 'dir' : 'file';
     const icon = en.isDir ? '📁' : '📄';
     const size = en.isDir ? (en.sizeComputed ? fmtSize(en.size) : '') : fmtSize(en.size);
@@ -1242,7 +1435,7 @@ function renderEntries() {
         else if (op === 'size') showSize(remotePath);
         else if (op === 'preview') previewEntry(remotePath);
         else if (op === 'download') downloadEntry(name);
-        else if (op === 'tolocal') downloadEntryToLocal(name);
+        else if (op === 'tolocal') downloadEntryToTarget(name);
         else if (op === 'info') showInfo(remotePath);
         else if (op === 'link') copyLink(remotePath);
       };
@@ -1261,7 +1454,7 @@ function renderEntries() {
         items.push({ label: '进入', action: () => enterDir(name) });
         items.push({ label: '统计占用…', action: () => showSize(remotePath) });
         items.push({ label: '下载目录…', action: () => downloadFolder(remotePath) });
-        items.push({ label: '下载目录到本地栏', action: () => downloadFolderToLocal(remotePath) });
+        items.push({ label: '下载目录到本地页签…', action: () => downloadFolderToTarget(remotePath) });
         if (!state.path) {
           items.push({ separator: true });
           items.push({ label: '编辑桶策略…', action: () => openPolicy(name) });
@@ -1270,7 +1463,7 @@ function renderEntries() {
       } else {
         items.push({ label: '预览', action: () => previewEntry(remotePath) });
         items.push({ label: '下载…', action: () => downloadEntry(name) });
-        items.push({ label: '下载到本地栏', action: () => downloadEntryToLocal(name) });
+        items.push({ label: '下载到其他页签…', action: () => downloadEntryToTarget(name) });
         items.push({ label: '编辑文本…', action: () => editText(remotePath) });
         items.push({ separator: true });
         items.push({ label: '复制下载链接（7 天）', action: () => copyLink(remotePath) });
@@ -1624,6 +1817,8 @@ function openEdit(name) {
   secretInput.type = 'password';
   secretInput.value = '';
   document.getElementById('edit-secret-eye').textContent = '👁';
+  document.getElementById('edit-mount-row').style.display = name ? 'none' : 'flex';
+  document.getElementById('edit-mount').checked = false;
   const fields = { 'edit-name': '', 'edit-display': '', 'edit-endpoint': '', 'edit-account': '', 'edit-secret': '', 'edit-region': '' };
   if (name) {
     api().GetConnection(name).then((def) => {
@@ -1634,6 +1829,8 @@ function openEdit(name) {
       document.getElementById('edit-endpoint').value = def.endpoint || '';
       document.getElementById('edit-account').value = def.account || '';
       document.getElementById('edit-region').value = def.region || '';
+      // 编辑时回显已有密钥，便于核对；仍默认以密码形式隐藏。
+      document.getElementById('edit-secret').value = def.secret || '';
     }).catch((err) => setStatus('读取连接失败：' + err, true));
   } else {
     Object.keys(fields).forEach((id) => { document.getElementById(id).value = fields[id]; });
@@ -1669,11 +1866,14 @@ async function testConnectionInput() {
 
 async function saveConnection() {
   const def = readConnectionForm();
+  const isNew = !state.editing;
+  const mountAfter = isNew && document.getElementById('edit-mount').checked;
   try {
     await api().SaveConnection(def, !!state.editing);
     document.getElementById('edit-dialog').close();
     await refresh();
     notify('连接已保存');
+    if (mountAfter) await mountRemote(def.name);
   } catch (err) { setStatus('保存失败：' + err, true); }
 }
 
@@ -1960,24 +2160,49 @@ async function downloadEntry(name) {
 }
 
 // 直接下载到左侧本地栏当前目录，不弹目录选择框。
-async function downloadEntryToLocal(name) {
-  if (!state.local.visible) { notify('请先打开本地栏', true); return; }
+// downloadEntryToTarget 把当前文件下载/复制到其他打开的页签（远程页签为服务端复制）。
+async function downloadEntryToTarget(name) {
+  if (state.view === 'local') { notify('请先切换到远程页签', true); return; }
+  if (!state.active) { notify('请先选择文件', true); return; }
   const remotePath = state.active + ':' + (state.path ? state.path + '/' : '') + name;
-  setStatus('正在下载到 ' + state.local.path + ' …');
+  const targets = [];
+  tabOrder.forEach((tab) => {
+    if (tab === state.active) return;
+    const conn = state.connections.find((item) => item.name === tab);
+    const path = cacheOf(tab).path || '';
+    targets.push({ kind: 'remote', label: `${(conn && conn.displayName) || tab} / ${path || '/'}`, dir: tab + ':' + path });
+  });
+  if (state.localTab) {
+    targets.push({ kind: 'local', label: `本地文件 / ${state.localView.path}`, dir: state.localView.path });
+  }
+  if (!targets.length) { notify('没有其他打开的目标页签', true); return; }
+  const target = targets.length === 1 ? targets[0] : await chooseOption('下载到', targets);
+  if (!target) return;
+  setStatus('正在下载到 ' + target.label + ' …');
   try {
-    const local = await api().Download(remotePath, state.local.path);
-    await navigateLocal(state.local.path);
-    notify('已下载到 ' + local);
+    if (target.kind === 'local') {
+      const local = await api().Download(remotePath, target.dir);
+      await loadLocalView(state.localView.path);
+      notify('已下载到 ' + local);
+    } else {
+      const copied = await api().CopyRemote(remotePath, target.dir);
+      const targetName = target.dir.split(':')[0];
+      if (targetName === state.active) await loadEntries();
+      else cacheOf(targetName).loaded = false;
+      notify('已复制到 ' + copied);
+    }
   } catch (err) { notify('下载失败：' + err, true); }
 }
 
-async function downloadFolderToLocal(remotePath) {
-  if (!state.local.visible) { notify('请先打开本地栏', true); return; }
-  setStatus('正在下载目录到 ' + state.local.path + ' …');
+// 目录下载到已打开的本地页签。
+async function downloadFolderToTarget(remotePath) {
+  if (!state.localTab) { notify('请先打开本地文件页签', true); return; }
+  const dir = state.localView.path;
+  setStatus('正在下载目录到 ' + dir + ' …');
   try {
-    await api().DownloadFolder(remotePath, state.local.path);
-    await navigateLocal(state.local.path);
-    notify('目录已下载到 ' + state.local.path);
+    await api().DownloadFolder(remotePath, dir);
+    await loadLocalView(dir);
+    notify('目录已下载到 ' + dir);
   } catch (err) { notify('下载失败：' + err, true); }
 }
 
@@ -2283,24 +2508,41 @@ async function refreshDownloadList() {
       <td class="hsize">${esc(item.size)}${detail ? `<div class="hdetail">${esc(detail)}</div>` : ''}</td>
       <td class="htime">${esc(item.time)}</td>
       <td class="hpath" title="${esc(item.localPath)}">${esc(item.localPath)}</td>
+      <td class="hops"><button data-del="1" title="删除记录">🗑</button></td>
     </tr>`;
   }).join('');
   host.innerHTML = `<table class="history-table">
-    <colgroup><col style="width:220px"><col style="width:90px"><col style="width:170px"><col style="width:150px"><col style="width:200px"></colgroup>
-    <thead><tr><th>名称</th><th>状态</th><th>大小 / 速度</th><th>时间</th><th>本地路径</th></tr></thead>
+    <colgroup><col style="width:190px"><col style="width:78px"><col style="width:150px"><col style="width:130px"><col style="width:220px"><col style="width:46px"></colgroup>
+    <thead><tr><th>名称</th><th>状态</th><th>大小 / 速度</th><th>时间</th><th>本地路径</th><th></th></tr></thead>
     <tbody>${rows}</tbody></table>`;
   host.querySelectorAll('.hrow').forEach((node) => {
     const path = node.dataset.path;
     if (!path) return;
+    const remove = node.querySelector('button[data-del]');
+    if (remove) remove.onclick = async (e) => { e.stopPropagation(); await deleteDownloadRecord(path); };
     node.oncontextmenu = (e) => {
       e.preventDefault();
       showMenu(e.clientX, e.clientY, [
         { label: '打开所在文件夹', action: () => api().OpenDownloadFolder(path).catch((err) => notify('打开失败：' + err, true)) },
         { label: '复制本地路径', action: () => { api().SetClipboard(path); notify('已复制：' + path); } },
+        { separator: true },
+        { label: '删除记录…', danger: true, action: () => deleteDownloadRecord(path) },
       ]);
     };
     node.ondblclick = () => api().OpenDownloadFolder(path).catch((err) => notify('打开失败：' + err, true));
   });
+}
+
+// 删除下载记录，并询问是否同时删除本地文件。
+async function deleteDownloadRecord(path) {
+  if (!path) return;
+  if (!confirm('删除这条下载记录？')) return;
+  const removeFile = confirm('是否同时删除本地文件？\n\n' + path + '\n\n确定 = 删除文件；取消 = 仅删除记录');
+  try {
+    await api().RemoveDownload(path, removeFile);
+    await refreshDownloadList();
+    notify(removeFile ? '记录与本地文件已删除' : '记录已删除');
+  } catch (err) { notify('删除失败：' + err, true); }
 }
 
 async function clearHistory() {
@@ -2343,6 +2585,7 @@ async function openLog() {
 function openSettings() {
   const s = state.settings;
   document.getElementById('set-config').value = s.rcloneConfig || '';
+  document.getElementById('set-startup-view').value = s.startupView || 'home';
   document.getElementById('set-filemanager').value = s.fileManager || '';
   document.getElementById('set-cache-dir').value = s.cacheDirectory || '';
   document.getElementById('set-dir-cache').value = s.dirCacheTime || '';
@@ -2383,6 +2626,7 @@ async function saveSettings() {
   const next = {
     ...state.settings,
     rcloneConfig: document.getElementById('set-config').value.trim(),
+    startupView: document.getElementById('set-startup-view').value,
     fileManager: document.getElementById('set-filemanager').value.trim(),
     cacheDirectory: document.getElementById('set-cache-dir').value.trim(),
     dirCacheTime: document.getElementById('set-dir-cache').value.trim(),
