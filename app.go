@@ -32,7 +32,7 @@ import (
 	"OssManager/internal/transfer"
 )
 
-const appVersion = "1.3.2"
+const appVersion = "1.3.3"
 
 func logf(format string, args ...interface{}) {
 	_ = os.MkdirAll(config.DataDir(), 0o755)
@@ -156,9 +156,28 @@ func (a *App) addMountRecord(remote, drive, volumeName string) {
 	_ = config.WriteMountRecords(records)
 }
 
-// volumeLabel 返回挂载卷标：连接名即显示名，不再区分 description。
+// volumeLabel 返回挂载卷标：优先连接显示名（description），其次连接名。
 func (a *App) volumeLabel(remote string) string {
-	return config.RemoteName(remote)
+	name := config.RemoteName(remote)
+	if label := a.connectionDisplayNames()[strings.ToLower(name)]; label != "" {
+		return label
+	}
+	return name
+}
+
+// connectionDisplayNames 返回小写连接名到显示名的映射。
+func (a *App) connectionDisplayNames() map[string]string {
+	result := map[string]string{}
+	connections, err := config.ListConnections(a.settings.RcloneConfig)
+	if err != nil {
+		return result
+	}
+	for _, item := range connections {
+		if item.DisplayName != "" && item.DisplayName != item.Name {
+			result[strings.ToLower(item.Name)] = item.DisplayName
+		}
+	}
+	return result
 }
 
 func (a *App) removeMountRecordByDrive(drive string) {
@@ -479,10 +498,13 @@ func (a *App) SetACL(remoteName, bucket, acl string) error {
 	return err
 }
 
-// SaveConnection 新增或更新连接；名称与显示名统一使用同一个值。
+// SaveConnection 新增或更新连接；名称是 rclone 段名，显示名称用于界面与卷标。
 func (a *App) SaveConnection(def remote.Definition, exists bool) error {
 	def.Name = strings.TrimSpace(def.Name)
-	def.DisplayName = def.Name
+	def.DisplayName = strings.TrimSpace(def.DisplayName)
+	if def.DisplayName == "" {
+		def.DisplayName = def.Name
+	}
 	err := remote.Save(a.settings.RcloneConfig, def, exists)
 	logf("SaveConnection %s exists=%v err=%v", def.Name, exists, err)
 	return err
@@ -696,11 +718,11 @@ func (a *App) ExportConnections(path string, includeSecrets, includeSettings boo
 	return text, os.WriteFile(path, []byte(text), 0o644)
 }
 
-// ExportBundle 把设置、rclone 配置与挂载记录打包为 zip 配置包，用于换机迁移。
+// ExportBundle 把设置、连接配置与挂载记录打包为 zip 配置包，用于换机迁移。
 func (a *App) ExportBundle(zipPath string) (string, error) {
 	entries := []bundle.Entry{
 		{Name: "settings.json", Path: config.SettingsPath()},
-		{Name: "rclone.conf", Path: a.settings.RcloneConfig},
+		{Name: "ossManage.conf", Path: a.settings.RcloneConfig},
 		{Name: "mounts.txt", Path: config.MountRecordPath()},
 	}
 	err := bundle.Export(zipPath, entries)
@@ -708,13 +730,15 @@ func (a *App) ExportBundle(zipPath string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return "配置包已导出（rclone 配置含连接密钥，请妥善保管）", nil
+	return "配置包已导出（连接配置含密钥，请妥善保管）", nil
 }
 
 // ImportBundle 导入配置包：成员写回前备份 .bak，随后立即重载设置与传输并发数。
 func (a *App) ImportBundle(zipPath string) (string, error) {
 	entries := []bundle.Entry{
 		{Name: "settings.json", Path: config.SettingsPath()},
+		{Name: "ossManage.conf", Path: a.settings.RcloneConfig},
+		// 兼容旧版本导出的 rclone.conf 成员。
 		{Name: "rclone.conf", Path: a.settings.RcloneConfig},
 		{Name: "mounts.txt", Path: config.MountRecordPath()},
 	}

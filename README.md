@@ -1,22 +1,22 @@
 # OssManager
 
-基于 Go + [Wails](https://wails.io/) + [rclone](https://rclone.org/) 库的 Windows OSS / S3 / MinIO 连接管理器。
+基于 Go + [Wails](https://wails.io/) 与内置对象存储内核（[rclone](https://rclone.org/) 库）的 Windows OSS / S3 / MinIO 连接管理器。
 
-用桌面界面管理 rclone 连接，把对象存储挂载成本地盘符，并浏览、下载、上传、导入导出连接，无需记忆命令行。
+用桌面界面管理对象存储连接，把连接挂载成本地盘符，并浏览、下载、上传、导入导出连接，无需命令行工具。
 
 ## 功能
 
-- 连接管理：新增、编辑、删除、改名、测试；连接名称即显示名称；新建/编辑时可先「测试连接」验证参数，密钥支持显示/隐藏
+- 连接管理：左上角「新建」、编辑、删除、测试；名称用于界面显示，连接标识保持不变；新建/编辑时可先「测试连接」验证参数，密钥支持显示/隐藏
 - 连接列表：此电脑与已映射网络共享和 OSS 连接统一显示；支持收起（收起后顶部显示连接下拉与展开按钮）、拖拽排序；网络共享可改盘符、名称或断开映射
 - 多页签：远程连接、此电脑与网络共享都以页签打开，各自保留路径与列表状态
-- 桶与文件浏览：双击进入目录，支持关键字筛选、点表头排序、名称列宽拖动、横向滚动；双击空白处返回上一级
+- 桶与文件浏览：双击进入目录；关键字筛选、点表头排序、名称列宽拖动、横向滚动；复选框多选、Shift 连选，删除前弹窗确认
 - 目录占用：顶部「统计占用」一键开关自动统计，延迟与间隔可在设置中配置（默认关闭）
-- 盘符挂载：基于 rclone 库与 WinFsp；新建/编辑连接时可选择盘符与磁盘名称，填写即自动挂载；首次挂载后自动记录，启动时恢复
+- 盘符挂载：基于内置挂载引擎与 WinFsp；新建/编辑连接时可选择盘符与磁盘名称，填写即自动挂载；首次挂载后自动记录，启动时恢复
 - 传输：多选上传、多选下载；可下载到已打开的页签、此电脑或其他已保存连接（子菜单选择）；支持单文件多线程分片下载（线程数可配置）
-- 传输记录：常驻顶部入口，记录下载位置与状态；可一键在对应连接中打开并定位到文件
+- 传输记录：常驻顶部入口、固定高度、右上角可关闭；可一键在对应连接中打开并定位到文件
 - 拖拽：在应用内拖到其他页签或此电脑完成复制/上传，也可拖到资源管理器复制落盘（设置中切换）
 - 权限：读取与编辑 Bucket Policy，显示 ACL 摘要
-- 迁移：连接信息 JSON 导入导出（可选包含账号与密钥）；设置、rclone 配置与挂载记录的配置包导出导入
+- 迁移：连接信息 JSON 导入导出（可选包含账号与密钥）；设置、连接配置与挂载记录的配置包导出导入
 - 阿里云 OSS：自动识别 bucket 实际地域并切换端点，跨地域桶也能打开
 - 界面：明暗双主题、顶部运行入口、右键菜单分组、斑马纹列表、状态栏信息、运行日志查看
 - 单实例：重复启动会激活已有窗口
@@ -63,9 +63,9 @@ OssManager.exe --autotest
 
 ## 配置
 
-设置固定保存在程序所在目录的 `settings.json`（与 exe 同目录），首次启动会尝试从旧版 `RcloneOssManager` 迁移 rclone 配置路径。主要字段：
+设置固定保存在程序所在目录的 `settings.json`（与 exe 同目录），首次启动会尝试从旧版 `RcloneOssManager` 迁移配置路径；已有的 `rclone.conf` 会自动复制为程序目录下的 `ossManage.conf`。主要字段：
 
-- `rcloneConfig`：rclone.conf 路径
+- `rcloneConfig`：连接配置文件路径（默认 `ossManage.conf`，与 exe 同目录）
 - `fileManager`：打开目录使用的文件管理器，留空自动探测 Pulse / Directory Opus
 - `theme`：`light` 或 `dark`
 - `cacheDirectory`、`dirCacheTime`、`vfsCacheMaxSize`、`vfsCacheMaxAge`、`bufferSize`：挂载缓存参数
@@ -78,9 +78,9 @@ OssManager.exe --autotest
 
 ```
 app.go                 Wails 绑定的后端接口
-internal/config        设置、rclone.conf 解析、挂载记录与排序
+internal/config        设置、连接配置文件解析、挂载记录与排序
 internal/remote        连接增删改
-internal/rclonefs      列桶与目录（rclone 库）
+internal/rclonefs      列桶与目录（内置内核）
 internal/rclonefs/region.go 阿里云跨地域 bucket 端点自动切换
 internal/mount         挂载与卸载（cgofuse + WinFsp）
 internal/transfer      上传与下载

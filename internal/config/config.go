@@ -94,6 +94,9 @@ func LoadSettings() Settings {
 	if strings.TrimSpace(value.RcloneConfig) == "" {
 		value.RcloneConfig = defaultRcloneConfig()
 	}
+	// 老版本使用 rclone.conf：自动复制为程序自己的 ossManage.conf，后续不再依赖 rclone 目录。
+	beforePath := value.RcloneConfig
+	value.RcloneConfig = migrateConfigPath(value.RcloneConfig)
 	if value.Theme != "dark" {
 		value.Theme = "light"
 	}
@@ -135,7 +138,7 @@ func LoadSettings() Settings {
 		value.StartupView = "home"
 	}
 	// 数据目录没有设置文件时立即落盘一份，保证配置文件固定与 exe 同目录。
-	if _, err := os.Stat(SettingsPath()); err != nil {
+	if _, err := os.Stat(SettingsPath()); err != nil || value.RcloneConfig != beforePath {
 		_ = SaveSettings(value)
 	}
 	return value
@@ -244,11 +247,35 @@ func RemoteOptions(confPath, name string) map[string]string {
 }
 
 func defaultRcloneConfig() string {
-	if value := os.Getenv("RCLONE_CONFIG"); value != "" {
+	// 连接配置固定放在程序目录，名称使用本项目自己的 ossManage.conf。
+	return filepath.Join(DataDir(), "ossManage.conf")
+}
+
+// migrateConfigPath 把旧的 rclone.conf 复制为 ossManage.conf 并改用新路径；
+// 非 rclone.conf 的自定义路径保持不变。
+func migrateConfigPath(path string) string {
+	value := strings.TrimSpace(path)
+	if value == "" || strings.EqualFold(filepath.Base(value), "ossManage.conf") {
 		return value
 	}
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, "AppData", "Roaming", "rclone", "rclone.conf")
+	if !strings.EqualFold(filepath.Base(value), "rclone.conf") {
+		return value
+	}
+	target := filepath.Join(DataDir(), "ossManage.conf")
+	if _, err := os.Stat(target); err == nil {
+		return target
+	}
+	data, err := os.ReadFile(value)
+	if err != nil {
+		return value
+	}
+	if err := os.MkdirAll(DataDir(), 0o755); err != nil {
+		return value
+	}
+	if err := os.WriteFile(target, data, 0o644); err != nil {
+		return value
+	}
+	return target
 }
 
 func legacySettingsPath() string {

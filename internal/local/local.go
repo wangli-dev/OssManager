@@ -10,12 +10,16 @@ import (
 	"syscall"
 	"time"
 	"unsafe"
+
+	"golang.org/x/sys/windows/registry"
 )
 
 // Share 是一个已映射或已记住的网络共享。
 type Share struct {
 	Remote string `json:"remote"`
 	Local  string `json:"local"`
+	// Label 是资源管理器里为该映射设置的显示名称（_LabelFromReg），为空时由前端按共享名生成。
+	Label string `json:"label"`
 }
 
 var (
@@ -91,7 +95,11 @@ func enumerateShares(scope uintptr) []Share {
 			if !strings.HasPrefix(remote, `\\`) {
 				continue
 			}
-			result = append(result, Share{Remote: remote, Local: utf16PtrString(items[index].LocalName)})
+			result = append(result, Share{
+				Remote: remote,
+				Local:  utf16PtrString(items[index].LocalName),
+				Label:  networkLabel(remote),
+			})
 		}
 	}
 	return result
@@ -192,10 +200,16 @@ func Drives() []Drive {
 		if label := volumeLabel(root); label != "" {
 			drive.Label = label
 		}
-		// 网络盘用共享名做名称，与连接列表里的共享条目保持一致（Windows 的卷标常为空或“新加卷”）。
+		// 网络盘用资源管理器里设置的映射名称，与「此电脑」里显示的一致；没有设置时退回共享名。
 		if drive.Kind == "network" {
-			if base := shareBaseName(networkConnection(root)); base != "" {
-				drive.Label = base
+			if unc := networkConnection(root); unc != "" {
+				label := networkLabel(unc)
+				if label == "" {
+					label = shareBaseName(unc)
+				}
+				if label != "" {
+					drive.Label = label
+				}
 			}
 		}
 		result = append(result, drive)
@@ -225,6 +239,29 @@ func shareBaseName(unc string) string {
 		return ""
 	}
 	return parts[len(parts)-1]
+}
+
+// networkLabel 读取资源管理器为网络映射保存的显示名称（_LabelFromReg），
+// 该名称可在「此电脑」里重命名，读取后连接列表与盘符下拉才能与系统显示一致。
+func networkLabel(remote string) string {
+	key, err := registry.OpenKey(registry.CURRENT_USER, mountPointsKey(remote), registry.QUERY_VALUE)
+	if err != nil {
+		return ""
+	}
+	defer key.Close()
+	value, _, err := key.GetStringValue("_LabelFromReg")
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(value)
+}
+
+// mountPointsKey 把 \\server\share 转成 MountPoints2 下的注册表路径。
+func mountPointsKey(remote string) string {
+	value := strings.TrimPrefix(strings.TrimSpace(remote), `\\`)
+	value = strings.TrimPrefix(value, "//")
+	value = strings.NewReplacer(`\`, "#", "/", "#").Replace(value)
+	return `Software\Microsoft\Windows\CurrentVersion\Explorer\MountPoints2\##` + value
 }
 
 // volumeLabel 读取卷标；网络盘无响应时按空处理，避免拖慢界面。

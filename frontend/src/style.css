@@ -45,10 +45,12 @@ header {
   border-bottom: 1px solid var(--border);
 }
 .header-side { flex: 1; }
+.header-left { display: flex; align-items: center; }
 .header-center { display: flex; align-items: center; gap: 6px; }
 .header-right { flex: 1; display: flex; justify-content: flex-end; align-items: center; gap: 6px; }
-.header-right .chip { padding: 4px 10px; }
+.header-right .chip { padding: 4px 10px; background: var(--accent-soft); color: var(--accent-text); border-color: color-mix(in srgb, var(--accent) 35%, var(--border)); }
 .header-right .chip:disabled { opacity: 0.45; cursor: default; }
+.header-right .chip.active { background: var(--accent); color: #fff; border-color: var(--accent); }
 
 header h1 { font-size: 16px; margin: 0 12px 0 0; }
 
@@ -147,6 +149,15 @@ aside .list-head button { padding: 0 6px; font-size: 12px; line-height: 18px; }
   user-select: none;
 }
 .conn-handle:hover { background: var(--accent-soft); color: var(--accent-text); }
+.conn-handle.open {
+  position: static;
+  align-self: center;
+  width: 15px;
+  height: 58px;
+  border-radius: 0 8px 8px 0;
+  border: 1px solid var(--border);
+  border-left: none;
+}
 
 /* 连接栏收起后，顶部用下拉框选择连接 */
 .conn-quick {
@@ -241,8 +252,10 @@ section.files {
 
 table { width: 100%; border-collapse: collapse; table-layout: fixed; }
 th, td { text-align: left; padding: 7px 12px; border-bottom: 1px solid var(--border); font-size: 13px; }
-th:first-child, td:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-thead th:first-child { overflow: visible; }
+td.name, th.name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+thead th.name { overflow: visible; }
+th.check, td.check { width: 24px; text-align: center; padding: 0 2px; overflow: visible; }
+th.check input, td.check input { width: 13px; height: 13px; margin: 0; cursor: pointer; accent-color: var(--accent); }
 th { color: var(--muted); font-weight: 500; position: sticky; top: 0; background: var(--card); }
 th.sortable { cursor: pointer; user-select: none; }
 th.sortable:hover { color: var(--text); }
@@ -258,7 +271,7 @@ th.sortable:hover { color: var(--text); }
 .col-resizer:hover { background: var(--accent-soft); }
 td.size, th.size { text-align: center; width: 80px; }
 td.time, th.time { text-align: center; width: 150px; color: var(--muted); }
-td.ops, th.ops { text-align: center; width: 96px; white-space: nowrap; }
+td.ops, th.ops { text-align: center; width: 120px; white-space: nowrap; }
 td.size, td.time, td.ops, th.size, th.time, th.ops { padding-left: 6px; padding-right: 6px; }
 tr.row { cursor: default; }
 tr.row:hover { background: var(--accent-soft); }
@@ -288,7 +301,37 @@ dialog {
   color: var(--text);
   padding: 18px;
   min-width: 520px;
+  position: relative;
 }
+
+.dialog-x {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 15px;
+  line-height: 26px;
+  border-radius: 6px;
+}
+.dialog-x:hover { background: var(--accent-soft); color: var(--text); }
+.dialog-x:focus { outline: none; }
+
+dialog.confirm { min-width: 0; width: 420px; max-width: 92vw; }
+.confirm-text {
+  margin: 6px 0 10px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.7;
+  white-space: pre-line;
+  word-break: break-all;
+}
+button.danger-solid { background: var(--danger); border-color: var(--danger); color: #fff; }
+button.danger-solid:hover { filter: brightness(1.08); }
 
 dialog::backdrop { background: rgba(0, 0, 0, 0.35); }
 
@@ -331,6 +374,7 @@ td.ops button {
   line-height: 20px;
 }
 td.ops button:hover { background: var(--accent-soft); border-radius: 4px; }
+td.ops button.danger-op { color: var(--danger); }
 td.empty { text-align: center; color: var(--muted); padding: 24px 12px; }
 
 .toast {
@@ -533,7 +577,8 @@ section.files .wails-drop-target-active {
 
 /* 下载记录 */
 .history-list {
-  max-height: 420px;
+  height: 420px;
+  max-height: 60vh;
   min-width: 700px;
   overflow: auto;
   border: 1px solid var(--border);
@@ -566,6 +611,7 @@ section.files .wails-drop-target-active {
 .history-table .hops { text-align: center; }
 .history-table .hops button { background: transparent; border: 0; font-size: 14px; padding: 1px 4px; cursor: pointer; }
 .history-table .hops button:hover { background: var(--accent-soft); border-radius: 4px; }
+.history-table .hops button.danger-op { color: var(--danger); }
 .history-table .hdetail { color: var(--muted); font-size: 11px; margin-top: 2px; }
 .history-table .herr { color: var(--danger); font-size: 11px; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
@@ -640,6 +686,12 @@ dialog label.chk input { width: auto; }
 .icon-btn { padding: 2px 7px; font-size: 13px; }
 tbody tr:nth-child(even) { background: rgba(0, 0, 0, 0.025); }
 body.dark tbody tr:nth-child(even) { background: rgba(255, 255, 255, 0.03); }
+/* 斑马纹优先级高于普通行样式（深色主题还多了 body.dark 前缀），
+   选中与悬停必须用同等前缀覆盖，否则偶数行点不亮。 */
+tbody tr.row:hover, body.dark tbody tr.row:hover { background: var(--accent-soft); }
+tbody tr.row.selected, body.dark tbody tr.row.selected,
+tbody tr.row.selected:hover, body.dark tbody tr.row.selected:hover { background: var(--selection); }
+tbody tr.row.selected td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
 #tabs:empty { display: none; }
 #tabs .tab {
   display: inline-flex;

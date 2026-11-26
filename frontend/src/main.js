@@ -31,6 +31,9 @@ let dragRemotePaths = [];
 let dragLocalPaths = [];
 // 从传输记录跳转后，列表加载完成时要选中的文件名。
 let pendingSelect = null;
+// Shift 连选使用的锚点（远程/本地各一个）。
+let multiAnchor = -1;
+let localAnchor = -1;
 
 // 远程侧多标签：每个打开的连接保留独立会话（路径、列表、选中、错误、滚动位置）。
 const tabCache = {};
@@ -149,7 +152,8 @@ function renderTabs() {
   if (!host) return;
   let html = tabOrder.map((name) => {
     const active = state.view !== 'local' && name === state.active;
-    return `<div class="tab${active ? ' active' : ''}" data-name="${esc(name)}" title="${esc(name)}"><span class="tab-label">${esc(name)}</span><span class="tab-close" data-close="${esc(name)}" title="关闭">×</span></div>`;
+    const label = connLabel(name);
+    return `<div class="tab${active ? ' active' : ''}" data-name="${esc(name)}" title="${esc(label)}"><span class="tab-label">${esc(label)}</span><span class="tab-close" data-close="${esc(name)}" title="关闭">×</span></div>`;
   }).join('');
   if (state.localTab) {
     const active = state.view === 'local';
@@ -223,7 +227,7 @@ function handleTabDrop(node, event) {
 function openTabAddMenu(event) {
   const rect = event.currentTarget.getBoundingClientRect();
   const items = state.connections.map((conn) => ({
-    label: `${conn.name}（${conn.type || ''}）`,
+    label: `${conn.displayName || conn.name}（${conn.type || ''}）`,
     action: () => openTab(conn.name),
   }));
   if (items.length) items.push({ separator: true });
@@ -337,8 +341,14 @@ let menuEl;
 
 const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
+// connLabel 返回连接在界面上显示的名称：优先 description，其次内部段名。
+function connLabel(name) {
+  const conn = state.connections.find((item) => item.name === name);
+  return (conn && (conn.displayName || conn.name)) || name;
+}
+
 // ===== 文件列表栏：标题、筛选、排序与列宽 =====
-const COL_SIZE = 80, COL_TIME = 150, COL_OPS = 96, COL_NAME_MIN = 120, COL_NAME_MAX = 900;
+const COL_CHECK = 24, COL_SIZE = 80, COL_TIME = 150, COL_OPS = 120, COL_NAME_MIN = 120, COL_NAME_MAX = 900;
 
 function loadNameWidth() {
   const saved = parseInt(localStorage.getItem('ossmanager.nameWidth') || '', 10);
@@ -358,7 +368,8 @@ function applyWindowTitle() {
   if (state.view === 'local' && state.localTab) {
     title = `OssManager — ${state.localTab.label} / ${state.localView.path}`;
   } else if (state.active) {
-    title = state.path ? `OssManager — ${state.active} / ${state.path}` : `OssManager — ${state.active}`;
+    const label = connLabel(state.active);
+    title = state.path ? `OssManager — ${label} / ${state.path}` : `OssManager — ${label}`;
   }
   window.runtime.WindowSetTitle(title);
 }
@@ -389,7 +400,7 @@ function startNameResize(e) {
     if (!table) return;
     const col = table.querySelector('col');
     if (col) col.style.width = width + 'px';
-    table.style.width = `max(100%, ${width + COL_SIZE + COL_TIME + COL_OPS}px)`;
+    table.style.width = `max(100%, ${width + COL_CHECK + COL_SIZE + COL_TIME + COL_OPS}px)`;
   };
   const up = () => {
     document.removeEventListener('mousemove', move);
@@ -456,7 +467,8 @@ function hideMenu() {
 }
 
 // menuElement 构建菜单；支持分区标题、分隔符与二级子菜单。
-function menuElement(items) {
+// 子菜单自身不能在自己的菜单项上再次 closeSubMenu，否则鼠标一进入子菜单就会被移除。
+function menuElement(items, isSub) {
   const el = document.createElement('div');
   el.className = 'menu';
   items.forEach((item) => {
@@ -477,7 +489,7 @@ function menuElement(items) {
     node.className = 'menu-item' + (item.danger ? ' danger' : '') + (item.children ? ' has-sub' : '');
     node.textContent = item.label;
     node.onmouseenter = () => {
-      closeSubMenu();
+      if (!isSub) closeSubMenu();
       if (item.children) openSubMenu(node, item.children);
     };
     if (item.children) {
@@ -493,7 +505,7 @@ function menuElement(items) {
 function openSubMenu(node, items) {
   closeSubMenu();
   node.classList.add('open');
-  subMenuEl = menuElement(items);
+  subMenuEl = menuElement(items, true);
   document.body.appendChild(subMenuEl);
   const rect = node.getBoundingClientRect();
   const size = subMenuEl.getBoundingClientRect();
@@ -516,9 +528,9 @@ document.addEventListener('click', (e) => {
   if (menuEl && !menuEl.contains(e.target) && !(subMenuEl && subMenuEl.contains(e.target))) hideMenu();
   const popover = document.getElementById('conn-popover');
   const button = document.getElementById('conn-quick');
-  const expand = document.getElementById('conn-expand');
+  const handleOpen = document.getElementById('conn-handle-open');
   if (popover && popover.style.display !== 'none' && button
-    && !popover.contains(e.target) && !button.contains(e.target) && !(expand && expand.contains(e.target))) {
+    && !popover.contains(e.target) && !button.contains(e.target) && !(handleOpen && handleOpen.contains(e.target))) {
     popover.style.display = 'none';
   }
 });
@@ -526,11 +538,11 @@ document.addEventListener('click', (e) => {
 function renderShell() {
   app.innerHTML = `
     <header>
-      <div class="header-side"></div>
+      <div class="header-side header-left">
+        <button id="conn-add" class="primary" title="新建连接 / 添加网络共享">新建</button>
+      </div>
       <div class="header-center">
-        <button id="conn-expand" class="conn-quick" title="展开连接栏" style="display:none">«</button>
         <button id="conn-quick" class="conn-quick" title="选择连接" style="display:none">选择连接 ▾</button>
-        <button id="conn-add" class="primary" title="新建连接 / 添加网络共享">+</button>
       </div>
       <div class="header-right">
         <button id="btn-autosize" class="chip" title="自动统计目录占用：关">统计占用</button>
@@ -539,25 +551,13 @@ function renderShell() {
       </div>
     </header>
     <main>
+      <div id="conn-handle-open" class="conn-handle open" title="展开连接栏" style="display:none">›</div>
       <aside id="conn-pane">
         <div class="list-head"><span class="list-title">连接</span><span class="list-tools-inline"><button id="btn-refresh" title="刷新连接列表">⟳</button></span></div>
         <div id="connections"></div>
         <div id="conn-handle" class="conn-handle" title="收起连接栏">‹</div>
       </aside>
       <div class="resizer" data-target="conn-pane" title="拖动调整宽度"></div>
-      <section class="local" id="local-pane">
-        <div class="pane-head">
-          <button id="local-up" title="上级目录">↑</button>
-          <select id="local-drives" title="盘符"></select>
-          <button id="local-hide" title="隐藏本地栏">✕</button>
-        </div>
-        <div class="local-pathbar">
-          <div id="local-crumbs" class="local-crumbs"></div>
-          <button id="local-edit" title="手动输入路径">✎</button>
-        </div>
-        <div id="local-entries"></div>
-      </section>
-      <div class="resizer" data-target="local-pane" title="拖动调整宽度"></div>
       <section class="files">
         <div class="tabbar">
           <div id="tabs"></div>
@@ -579,6 +579,7 @@ function renderShell() {
     <dialog id="edit-dialog">
       <h2 id="edit-title">新建连接</h2>
       <label>名称</label><input id="edit-name" />
+      <p class="hint" id="edit-name-hint"></p>
       <label>类型</label>
       <select id="edit-type">
         <option value="minio">MinIO / S3 兼容</option>
@@ -648,7 +649,7 @@ function renderShell() {
       </div>
     </dialog>
     <dialog id="settings-dialog" class="settings">
-      <h2>设置</h2>
+      <h2>设置<button id="settings-x" class="dialog-x" title="关闭">✕</button></h2>
       <h3>启动</h3>
       <label>启动时显示</label>
       <select id="set-startup-view">
@@ -656,7 +657,7 @@ function renderShell() {
         <option value="last">上次关闭时的画面</option>
       </select>
       <h3>连接与文件</h3>
-      <label>rclone 配置文件</label><input id="set-config" />
+      <label>连接配置文件</label><input id="set-config" />
       <label>文件管理器（留空自动探测）</label><input id="set-filemanager" />
       <h3>缓存</h3>
       <div class="row">
@@ -691,8 +692,8 @@ function renderShell() {
         <button id="set-import-bundle">导入配置包…</button>
       </div>
       <div class="footer">
-        <button id="settings-cancel">取消</button>
-        <button id="settings-save" class="primary">保存</button>
+        <button id="settings-save">保存</button>
+        <button id="settings-save-close" class="primary">保存并关闭</button>
       </div>
     </dialog>
     <dialog id="mount-dialog">
@@ -764,7 +765,7 @@ function renderShell() {
       <div class="footer"><button id="log-close" class="primary">关闭</button></div>
     </dialog>
     <dialog id="history-dialog">
-      <h2>传输记录 <span id="task-count" class="count"></span></h2>
+      <h2>传输记录 <span id="task-count" class="count"></span><button id="history-x" class="dialog-x" title="关闭">✕</button></h2>
       <div id="download-list" class="history-list"></div>
       <div class="footer">
         <button id="history-clear">清空记录</button>
@@ -801,6 +802,15 @@ function renderShell() {
         <button id="net-ok" class="primary">连接</button>
       </div>
     </dialog>
+    <dialog id="confirm-dialog" class="confirm">
+      <h2><span id="confirm-title">确认删除</span><button id="confirm-x" class="dialog-x" title="关闭">✕</button></h2>
+      <p id="confirm-text" class="confirm-text"></p>
+      <label class="chk" id="confirm-check-row"><input type="checkbox" id="confirm-check" /><span id="confirm-check-label"></span></label>
+      <div class="footer">
+        <button id="confirm-cancel">取消</button>
+        <button id="confirm-ok" class="danger-solid">删除</button>
+      </div>
+    </dialog>
   `;
   statusEl = document.getElementById('status');
   const openCreateMenu = (e) => {
@@ -818,8 +828,8 @@ function renderShell() {
     e.stopPropagation();
     toggleConnPopover();
   };
-  document.getElementById('conn-expand').onclick = () => toggleConnPane(false);
   document.getElementById('conn-handle').onclick = () => toggleConnPane(true);
+  document.getElementById('conn-handle-open').onclick = () => toggleConnPane(false);
   document.getElementById('btn-more').onclick = openMoreMenu;
   state.connCollapsed = localStorage.getItem('ossmanager.connCollapsed') === '1';
   applyConnCollapsed();
@@ -827,10 +837,6 @@ function renderShell() {
   document.getElementById('btn-list-refresh').onclick = refreshCurrentView;
   document.getElementById('btn-upload').onclick = uploadFiles;
   document.getElementById('btn-download').onclick = downloadSelected;
-  document.getElementById('local-up').onclick = localUp;
-  document.getElementById('local-hide').onclick = () => toggleLocal(false);
-  document.getElementById('local-edit').onclick = editLocalPath;
-  document.getElementById('local-drives').onchange = (e) => navigateLocal(e.target.value);
   document.getElementById('filter-input').oninput = (e) => {
     state.filter = e.target.value;
     renderEntries();
@@ -838,6 +844,7 @@ function renderShell() {
   bindResizers();
   restorePaneWidths();
   document.getElementById('history-close').onclick = () => document.getElementById('history-dialog').close();
+  document.getElementById('history-x').onclick = () => document.getElementById('history-dialog').close();
   document.getElementById('history-dialog').addEventListener('close', () => stopTaskRefresh());
   document.getElementById('history-clear').onclick = clearHistory;
   document.getElementById('export-cancel').onclick = () => document.getElementById('export-dialog').close();
@@ -878,8 +885,13 @@ function renderShell() {
   document.getElementById('acl-private').onclick = () => applyACL('private');
   document.getElementById('acl-public-read').onclick = () => applyACL('public-read');
   document.getElementById('pd-apply').onclick = applyStatement;
-  document.getElementById('settings-cancel').onclick = () => document.getElementById('settings-dialog').close();
-  document.getElementById('settings-save').onclick = saveSettings;
+  document.getElementById('settings-x').onclick = () => document.getElementById('settings-dialog').close();
+  document.getElementById('settings-save').onclick = () => saveSettings(false);
+  document.getElementById('settings-save-close').onclick = () => saveSettings(true);
+  document.getElementById('confirm-x').onclick = () => finishConfirm(false);
+  document.getElementById('confirm-cancel').onclick = () => finishConfirm(false);
+  document.getElementById('confirm-ok').onclick = () => finishConfirm(true);
+  document.getElementById('confirm-dialog').addEventListener('cancel', (e) => { e.preventDefault(); finishConfirm(false); });
   document.getElementById('set-export-bundle').onclick = exportBundle;
   document.getElementById('set-import-bundle').onclick = importBundle;
 }
@@ -953,7 +965,8 @@ function shareAliases() {
 
 function defaultShareLabel(share) {
   const drive = String(share.local || '').replace(/\\$/, '');
-  const base = String(share.remote || '').split('\\').filter(Boolean).pop() || share.remote;
+  const custom = String(share.label || '').trim();
+  const base = custom || String(share.remote || '').split('\\').filter(Boolean).pop() || share.remote;
   return drive ? `${base} (${drive})` : base;
 }
 
@@ -989,7 +1002,7 @@ function connectionListHTML() {
     const driveBadge = drive ? `<span class="badge mounted">${esc(drive)}</span>` : '';
     const active = state.view === 'remote' && state.active === c.name;
     return `<div class="conn${active ? ' active' : ''}" data-name="${esc(c.name)}">
-      <span class="title"><span class="name" title="${esc(c.name)}">${esc(c.name)}</span><span class="badge type">${esc(c.type || '')}</span></span>
+      <span class="title"><span class="name" title="${esc(c.displayName || c.name)}">${esc(c.displayName || c.name)}</span><span class="badge type">${esc(c.type || '')}</span></span>
       ${driveBadge}</div>`;
   }).join('');
   return localRows + '<div class="conn-sep"></div>' + (connections || '<div class="empty">没有连接</div>');
@@ -1079,7 +1092,7 @@ function renderConnQuick() {
     button.textContent = `${state.localTab.label} ▾`;
     return;
   }
-  button.textContent = state.active ? `${state.active} ▾` : '选择连接 ▾';
+  button.textContent = state.active ? `${connLabel(state.active)} ▾` : '选择连接 ▾';
 }
 
 function refreshConnPopover() {
@@ -1112,12 +1125,13 @@ function applyConnCollapsed() {
   const collapsed = !!state.connCollapsed;
   const pane = document.getElementById('conn-pane');
   const bar = document.querySelector('.resizer[data-target="conn-pane"]');
+  const handleOpen = document.getElementById('conn-handle-open');
   const quick = document.getElementById('conn-quick');
-  const expand = document.getElementById('conn-expand');
   if (pane) pane.style.display = collapsed ? 'none' : '';
+  // 收起后连拖动调整宽度的竖条也要隐藏；展开手柄保留在左边缘。
   if (bar) bar.style.display = collapsed ? 'none' : '';
+  if (handleOpen) handleOpen.style.display = collapsed ? '' : 'none';
   if (quick) quick.style.display = collapsed ? '' : 'none';
-  if (expand) expand.style.display = collapsed ? '' : 'none';
   if (collapsed) toggleConnPopover(false);
   localStorage.setItem('ossmanager.connCollapsed', collapsed ? '1' : '0');
   renderConnQuick();
@@ -1241,24 +1255,35 @@ function renderLocalView() {
   const visible = entries.filter((entry) => !keyword || String(entry.name).toLowerCase().includes(keyword));
   if (stat) stat.textContent = keyword ? `筛选 ${visible.length} / 共 ${entries.length} 项` : '';
   const nameWidth = loadNameWidth();
-  const totalWidth = nameWidth + COL_SIZE + COL_TIME + COL_OPS;
-  const rows = visible.map((entry) => {
+  const totalWidth = nameWidth + COL_CHECK + COL_SIZE + COL_TIME + COL_OPS;
+  const rows = visible.map((entry, index) => {
     const full = joinLocal(state.localView.path, entry.name);
     const icon = entry.isDir ? '📁' : '📄';
     const cls = entry.isDir ? 'dir' : 'file';
+    const checked = state.localMulti.has(full);
     const size = entry.isDir ? '' : fmtSize(entry.size);
-    return `<tr class="row ${cls}" data-full="${esc(full)}" data-name="${esc(entry.name)}" data-dir="${entry.isDir}" data-size="${entry.size || 0}" data-time="${esc(entry.modTime || '')}">
-      <td><span class="icon">${icon}</span>${esc(entry.name)}</td>
+    return `<tr class="row ${cls}${checked ? ' selected' : ''}" data-full="${esc(full)}" data-select-key="${esc(full)}" data-name="${esc(entry.name)}" data-dir="${entry.isDir}" data-size="${entry.size || 0}" data-time="${esc(entry.modTime || '')}">
+      <td class="check"><input type="checkbox" id="local-check-${index}" data-check="${esc(full)}"${checked ? ' checked' : ''} /></td>
+      <td class="name"><span class="icon">${icon}</span>${esc(entry.name)}</td>
       <td class="size">${esc(size)}</td>
       <td class="time">${esc(entry.modTime || '')}</td>
-      <td class="ops"><button data-local-op="upload" title="上传到远程页签">⬆</button><button data-local-op="open" title="在资源管理器中打开">📂</button></td>
+      <td class="ops"><button id="local-upload-${index}" data-local-op="upload" title="上传到远程页签">⬆</button><button id="local-open-${index}" data-local-op="open" title="在资源管理器中打开">📂</button></td>
     </tr>`;
   }).join('');
-  const body = rows || `<tr><td colspan="4" class="empty">${keyword ? '没有匹配的条目' : '空目录'}</td></tr>`;
+  const body = rows || `<tr><td colspan="5" class="empty">${keyword ? '没有匹配的条目' : '空目录'}</td></tr>`;
   host.innerHTML = `<table style="width:max(100%, ${totalWidth}px)">
-    <colgroup><col style="width:${nameWidth}px"><col style="width:${COL_SIZE}px"><col style="width:${COL_TIME}px"><col style="width:${COL_OPS}px"></colgroup>
-    <thead><tr><th>名称</th><th class="size">大小</th><th class="time">修改时间</th><th class="ops">操作</th></tr></thead>
+    <colgroup><col style="width:${COL_CHECK}px"><col style="width:${nameWidth}px"><col style="width:${COL_SIZE}px"><col style="width:${COL_TIME}px"><col style="width:${COL_OPS}px"></colgroup>
+    <thead><tr><th class="check"><input type="checkbox" id="local-select-all" title="全选当前列表" /></th><th class="name">名称</th><th class="size">大小</th><th class="time">修改时间</th><th class="ops">操作</th></tr></thead>
     <tbody>${body}</tbody></table>`;
+  const selectAll = document.getElementById('local-select-all');
+  if (selectAll) {
+    selectAll.onchange = () => {
+      const rows = Array.from(host.querySelectorAll('tr.row'));
+      if (selectAll.checked) rows.forEach((item) => state.localMulti.add(item.dataset.full));
+      else state.localMulti.clear();
+      syncCheckboxes(host, state.localMulti, 'local-select-all');
+    };
+  }
   host.querySelectorAll('tr.row').forEach((row) => {
     const full = row.dataset.full;
     const isDir = row.dataset.dir === 'true';
@@ -1272,15 +1297,31 @@ function renderLocalView() {
       e.dataTransfer.setData('application/x-oss-local', full);
     };
     row.ondragend = () => { dragLocalPaths = []; };
+    const checkbox = row.querySelector('input[data-check]');
+    if (checkbox) {
+      checkbox.onclick = (e) => {
+        e.stopPropagation();
+        if (checkbox.checked) state.localMulti.add(full);
+        else state.localMulti.delete(full);
+        localAnchor = Array.from(host.querySelectorAll('tr.row')).indexOf(row);
+        syncCheckboxes(host, state.localMulti, 'local-select-all');
+      };
+    }
     row.onclick = (e) => {
-      if (e.ctrlKey || e.metaKey) {
+      const rows = Array.from(host.querySelectorAll('tr.row'));
+      const index = rows.indexOf(row);
+      if (e.shiftKey) {
+        const anchor = localAnchor >= 0 && localAnchor < rows.length ? localAnchor : index;
+        const from = Math.min(anchor, index);
+        const to = Math.max(anchor, index);
+        if (!e.ctrlKey && !e.metaKey) state.localMulti.clear();
+        for (let i = from; i <= to; i++) state.localMulti.add(rows[i].dataset.full);
+      } else {
         if (state.localMulti.has(full)) state.localMulti.delete(full);
         else state.localMulti.add(full);
-      } else {
-        state.localMulti.clear();
-        state.localMulti.add(full);
+        localAnchor = index;
       }
-      host.querySelectorAll('tr.row').forEach((item) => item.classList.toggle('selected', state.localMulti.has(item.dataset.full)));
+      syncCheckboxes(host, state.localMulti, 'local-select-all');
       const kind = isDir ? '目录' : `文件 ${fmtSize(Number(row.dataset.size || 0))}`;
       setStatus(`此电脑 · ${full} · ${kind} · 修改时间 ${row.dataset.time || '未知'}`);
     };
@@ -1292,7 +1333,7 @@ function renderLocalView() {
         : [full];
       showMenu(e.clientX, e.clientY, [
         ...(isDir ? [{ label: '进入', action: () => loadLocalView(full) }] : []),
-        { label: picked.length > 1 ? `上传选中的 ${picked.length} 项…` : '上传到远程页签…', action: () => uploadPaths(picked) },
+        { label: picked.length > 1 ? `上传选中的 ${picked.length} 项…` : '上传到远程页签…', action: () => uploadPaths(picked, true) },
         { separator: true },
         { label: '复制路径', action: () => { api().SetClipboard(full); notify('已复制：' + full); } },
         { label: '在资源管理器中打开', action: () => api().OpenFolder(isDir ? full : dirOf(full)).catch((err) => notify('打开失败：' + err, true)) },
@@ -1308,6 +1349,7 @@ function renderLocalView() {
   });
   const files = entries.filter((entry) => !entry.isDir);
   const total = files.reduce((sum, entry) => sum + (entry.size || 0), 0);
+  syncCheckboxes(host, state.localMulti, 'local-select-all');
   setStatus(`${state.localView.path} · ${entries.length} 项（文件 ${files.length}，目录 ${entries.length - files.length}）· ${fmtSize(total)}`);
 }
 
@@ -1467,10 +1509,27 @@ function updateFooter(extra) {
   const files = state.entries.filter((entry) => !entry.isDir);
   const dirs = state.entries.length - files.length;
   const total = files.reduce((sum, entry) => sum + (entry.size || 0), 0);
-  const remote = state.active + ':' + state.path;
-  let text = `${remote} · ${state.entries.length} 项（文件 ${files.length}，目录 ${dirs}）· ${fmtSize(total)}`;
+  let text = `${connLabel(state.active)}:${state.path} · ${state.entries.length} 项（文件 ${files.length}，目录 ${dirs}）· ${fmtSize(total)}`;
   if (extra) text += ' · ' + extra;
   setStatus(text);
+}
+
+// syncCheckboxes 同步行选中样式、复选框与全选框状态。
+function syncCheckboxes(host, selected, allId) {
+  const rows = Array.from(host.querySelectorAll('tr.row'));
+  let checked = 0;
+  rows.forEach((row) => {
+    const on = selected.has(row.dataset.selectKey);
+    row.classList.toggle('selected', on);
+    const box = row.querySelector('input[data-check]');
+    if (box) box.checked = on;
+    if (on) checked++;
+  });
+  const all = document.getElementById(allId);
+  if (all) {
+    all.checked = rows.length > 0 && checked === rows.length;
+    all.indeterminate = checked > 0 && checked < rows.length;
+  }
 }
 
 function renderEntries() {
@@ -1487,7 +1546,7 @@ function renderEntries() {
       <div class="welcome">
         <h2>开始使用</h2>
         <ol>
-          <li>点击顶部「+」新建连接，或从左侧连接列表中选择已有连接。</li>
+          <li>点击左上角「新建」创建连接，或从左侧连接列表中选择已有连接。</li>
           <li>双击目录进入；列表右侧操作列可预览、下载或下载到其他页签。</li>
           <li>右键连接可挂载为本地盘符；右键文件可重命名、删除或复制下载链接。</li>
           <li>把文件拖到其他页签或「此电脑」可复制，拖入窗口可从资源管理器上传。</li>
@@ -1498,7 +1557,7 @@ function renderEntries() {
     return;
   }
   const parts = state.path ? state.path.split('/').filter(Boolean) : [];
-  let trail = `<a href="#" data-path="">${esc(state.active)}</a>`;
+  let trail = `<a href="#" data-path="">${esc(connLabel(state.active))}</a>`;
   parts.forEach((part, index) => {
     const target = parts.slice(0, index + 1).join('/');
     trail += `<span class="sep">/</span><a href="#" data-path="${esc(target)}">${esc(part)}</a>`;
@@ -1522,31 +1581,45 @@ function renderEntries() {
   if (!state.entries.length) { host.innerHTML = '<div class="empty">此位置没有对象</div>'; return; }
 
   const nameWidth = loadNameWidth();
-  const totalWidth = nameWidth + COL_SIZE + COL_TIME + COL_OPS;
+  const totalWidth = nameWidth + COL_CHECK + COL_SIZE + COL_TIME + COL_OPS;
   const arrow = (key) => (state.sort.key === key ? (state.sort.dir > 0 ? ' ▲' : ' ▼') : '');
   const rows = visible.map((en, index) => {
     const ops = en.isDir
-      ? `<button id="op-size-${index}" data-op="size" title="统计占用">📊</button>`
-      : `<button id="op-preview-${index}" data-op="preview" title="预览">👁</button><button id="op-download-${index}" data-op="download" title="下载">⬇</button><button id="op-tolocal-${index}" data-op="tolocal" title="下载到…">⇥</button><button id="op-info-${index}" data-op="info" title="属性">ℹ</button>`;
+      ? `<button id="op-size-${index}" data-op="size" title="统计占用">📊</button><button id="op-delete-${index}" data-op="delete" class="danger-op" title="删除">🗑</button>`
+      : `<button id="op-preview-${index}" data-op="preview" title="预览">👁</button><button id="op-download-${index}" data-op="download" title="下载">⬇</button><button id="op-tolocal-${index}" data-op="tolocal" title="下载到…">⇥</button><button id="op-info-${index}" data-op="info" title="属性">ℹ</button><button id="op-delete-${index}" data-op="delete" class="danger-op" title="删除">🗑</button>`;
     const cls = en.isDir ? 'dir' : 'file';
+    const checked = state.multi.has(en.name);
     const icon = en.isDir ? '📁' : '📄';
     const size = en.isDir ? (en.sizeComputed ? fmtSize(en.size) : '') : fmtSize(en.size);
-    return `<tr class="row ${cls}" data-name="${esc(en.name)}" data-dir="${en.isDir}">
-      <td><span class="icon">${icon}</span>${esc(en.name)}</td>
+    return `<tr class="row ${cls}${checked ? ' selected' : ''}" data-name="${esc(en.name)}" data-select-key="${esc(en.name)}" data-dir="${en.isDir}">
+      <td class="check"><input type="checkbox" id="check-${index}" data-check="${esc(en.name)}"${checked ? ' checked' : ''} /></td>
+      <td class="name"><span class="icon">${icon}</span>${esc(en.name)}</td>
       <td class="size">${esc(size)}</td>
       <td class="time">${esc(en.modTime || '')}</td>
       <td class="ops">${ops}</td>
     </tr>`;
   }).join('');
-  const body = rows || `<tr><td colspan="4" class="empty">没有匹配「${esc(state.filter.trim())}」的条目</td></tr>`;
+  const body = rows || `<tr><td colspan="5" class="empty">没有匹配「${esc(state.filter.trim())}」的条目</td></tr>`;
   host.innerHTML = `<table style="width:max(100%, ${totalWidth}px)">
-    <colgroup><col style="width:${nameWidth}px"><col style="width:${COL_SIZE}px"><col style="width:${COL_TIME}px"><col style="width:${COL_OPS}px"></colgroup>
+    <colgroup><col style="width:${COL_CHECK}px"><col style="width:${nameWidth}px"><col style="width:${COL_SIZE}px"><col style="width:${COL_TIME}px"><col style="width:${COL_OPS}px"></colgroup>
     <thead><tr>
-      <th class="sortable" data-sort="name">名称${arrow('name')}<span class="col-resizer" title="拖动调整名称列宽"></span></th>
+      <th class="check"><input type="checkbox" id="select-all" title="全选当前列表" /></th>
+      <th class="name sortable" data-sort="name">名称${arrow('name')}<span class="col-resizer" title="拖动调整名称列宽"></span></th>
       <th class="size sortable" data-sort="size">大小${arrow('size')}</th>
       <th class="time sortable" data-sort="time">修改时间${arrow('time')}</th>
       <th class="ops">操作</th>
     </tr></thead><tbody>${body}</tbody></table>`;
+  const selectAll = document.getElementById('select-all');
+  if (selectAll) {
+    selectAll.onchange = () => {
+      const rows = Array.from(host.querySelectorAll('tr.row'));
+      if (selectAll.checked) rows.forEach((item) => state.multi.add(item.dataset.name));
+      else state.multi.clear();
+      state.selected = null;
+      syncCheckboxes(host, state.multi, 'select-all');
+      updateFooter(state.multi.size ? `已选 ${state.multi.size} 项` : undefined);
+    };
+  }
   host.querySelectorAll('th.sortable').forEach((th) => {
     th.onclick = () => {
       const key = th.dataset.sort;
@@ -1583,21 +1656,43 @@ function renderEntries() {
       e.dataTransfer.setData('application/x-oss-remote', remotePath);
     };
     row.ondragend = () => { dragRemotePaths = []; };
+    const checkbox = row.querySelector('input[data-check]');
+    if (checkbox) {
+      checkbox.onclick = (e) => {
+        e.stopPropagation();
+        const name = row.dataset.name;
+        if (checkbox.checked) state.multi.add(name);
+        else state.multi.delete(name);
+        multiAnchor = Array.from(host.querySelectorAll('tr.row')).indexOf(row);
+        state.selected = checkbox.checked
+          ? { name, isDir: row.dataset.dir === 'true', path: state.active + ':' + (state.path ? state.path + '/' : '') + name }
+          : null;
+        syncCheckboxes(host, state.multi, 'select-all');
+        updateFooter(state.multi.size > 1 ? `已选 ${state.multi.size} 项` : undefined);
+      };
+    }
     row.onclick = (e) => {
       const name = row.dataset.name;
-      if (e.ctrlKey || e.metaKey) {
+      const rows = Array.from(host.querySelectorAll('tr.row'));
+      const index = rows.indexOf(row);
+      if (e.shiftKey) {
+        const anchor = multiAnchor >= 0 && multiAnchor < rows.length ? multiAnchor : index;
+        const from = Math.min(anchor, index);
+        const to = Math.max(anchor, index);
+        if (!e.ctrlKey && !e.metaKey) state.multi.clear();
+        for (let i = from; i <= to; i++) state.multi.add(rows[i].dataset.name);
+      } else {
+        // 直接点击也能逐个勾选/取消，不必每次按住 Ctrl。
         if (state.multi.has(name)) state.multi.delete(name);
         else state.multi.add(name);
-      } else {
-        state.multi.clear();
-        state.multi.add(name);
+        multiAnchor = index;
       }
-      host.querySelectorAll('tr.row').forEach((item) => item.classList.toggle('selected', state.multi.has(item.dataset.name)));
+      syncCheckboxes(host, state.multi, 'select-all');
       state.selected = state.multi.has(name)
         ? { name, isDir: row.dataset.dir === 'true', path: state.active + ':' + (state.path ? state.path + '/' : '') + name }
         : null;
       const picked = state.entries.find((item) => item.name === name);
-      updateFooter(state.selected && picked
+      updateFooter(state.selected && picked && state.multi.size === 1
         ? `选中：${name}${picked.isDir ? '（目录）' : '（' + fmtSize(picked.size) + '）'}`
         : (state.multi.size > 1 ? `已选 ${state.multi.size} 项` : undefined));
     };
@@ -1616,6 +1711,7 @@ function renderEntries() {
         } else if (op === 'tolocal') openDownloadTargetMenu(button, name);
         else if (op === 'info') showInfo(remotePath);
         else if (op === 'link') copyLink(remotePath);
+        else if (op === 'delete') deleteEntry(name, row.dataset.dir === 'true');
       };
     });
     row.ondblclick = () => {
@@ -1676,24 +1772,16 @@ function renderEntries() {
     host.classList.remove('drop-target');
     uploadLocalPath(localPath);
   };
+  syncCheckboxes(host, state.multi, 'select-all');
 }
 
 // ===== 本地文件栏 =====
 const LOCAL_KEY = 'ossmanager.local.path';
 
-// refreshDrives 重新读取盘符列表（含映射的网络盘），供此电脑页签与旧本地栏使用。
+// refreshDrives 重新读取盘符列表（含映射的网络盘），供此电脑页签使用。
 async function refreshDrives() {
   try {
     state.local.drives = (await api().LocalDrives()) || [];
-    const select = document.getElementById('local-drives');
-    if (select) {
-      select.innerHTML = state.local.drives.map((drive) => {
-        const root = drive.root.replace(/\\$/, '');
-        const letter = root.charAt(0).toUpperCase();
-        const label = drive.label && drive.label !== letter ? root + ' ' + drive.label : drive.root;
-        return `<option value="${esc(drive.root)}">${esc(label)}</option>`;
-      }).join('');
-    }
   } catch (err) { /* 盘符读取失败不影响远程浏览 */ }
 }
 
@@ -1703,34 +1791,6 @@ async function initLocal() {
   const preset = (state.settings && state.settings.downloadDirectory) || '';
   const first = state.local.drives[0] ? state.local.drives[0].root : 'C:\\';
   state.local.path = saved || preset || first;
-  state.local.visible = false;
-  document.getElementById('local-pane').style.display = 'none';
-  setLocalPath(state.local.path);
-}
-
-async function navigateLocal(path) {
-  const value = String(path || '').trim();
-  if (!value) return;
-  try {
-    state.local.entries = (await api().ListLocal(value)) || [];
-    state.local.error = '';
-    state.local.path = value;
-    localStorage.setItem(LOCAL_KEY, value);
-  } catch (err) {
-    state.local.entries = [];
-    state.local.error = '无法打开 ' + value + '：' + err;
-    state.local.path = value;
-  }
-  renderLocal();
-}
-
-function setLocalPath(path) {
-  const select = document.getElementById('local-drives');
-  if (select && path) {
-    const root = String(path).slice(0, 3).toUpperCase();
-    if (Array.from(select.options).some((option) => option.value.toUpperCase() === root)) select.value = root;
-  }
-  renderLocalCrumbs();
 }
 
 // splitLocalPath 把本地路径拆成根前缀与后续层级，用于面包屑。
@@ -1759,28 +1819,7 @@ function localCrumbTrail(path) {
   return html;
 }
 
-function renderLocalCrumbs() {
-  const host = document.getElementById('local-crumbs');
-  if (!host) return;
-  const { base, rest } = splitLocalPath(state.local.path);
-  let accumulated = base;
-  let html = `<a href="#" data-path="${esc(base)}">${esc(base)}</a>`;
-  rest.forEach((part) => {
-    accumulated = accumulated.replace(/\\$/, '') + '\\' + part;
-    html += `<span class="sep">›</span><a href="#" data-path="${esc(accumulated)}">${esc(part)}</a>`;
-  });
-  host.innerHTML = html;
-  host.querySelectorAll('a[data-path]').forEach((link) => {
-    link.onclick = (e) => { e.preventDefault(); navigateLocal(link.dataset.path); };
-  });
-}
-
-async function editLocalPath() {
-  const value = await askInput('本地路径（支持 \\\\服务器\\共享）', state.local.path || '');
-  if (value) navigateLocal(value);
-}
-
-// bindResizers 让连接栏与本地栏的宽度可以拖动调整。
+// bindResizers 让连接栏宽度可以拖动调整。
 function bindResizers() {
   document.querySelectorAll('.resizer').forEach((bar) => {
     bar.onmousedown = (event) => {
@@ -1816,22 +1855,6 @@ function restorePaneWidths() {
   });
 }
 
-function localUp() {
-  const value = String(state.local.path || '').replace(/[\\/]+$/, '');
-  if (!value) return;
-  const index = Math.max(value.lastIndexOf('\\'), value.lastIndexOf('/'));
-  if (index <= 2) { navigateLocal(value.slice(0, 3)); return; }
-  navigateLocal(value.slice(0, index));
-}
-
-function toggleLocal(force) {
-  state.local.visible = force === undefined ? !state.local.visible : force;
-  document.getElementById('local-pane').style.display = state.local.visible ? 'flex' : 'none';
-  if (!state.local.visible) return;
-  if (state.local.entries.length || state.local.error) renderLocal();
-  else navigateLocal(state.local.path);
-}
-
 function joinLocal(base, name) {
   const value = String(base || '');
   if (!value) return name;
@@ -1845,74 +1868,8 @@ function dirOf(path) {
   return index > 0 ? value.slice(0, index) : value;
 }
 
-function renderLocal() {
-  const host = document.getElementById('local-entries');
-  document.getElementById('local-pane').style.display = state.local.visible ? 'flex' : 'none';
-  setLocalPath(state.local.path);
-  if (state.local.error) { host.innerHTML = `<div class="empty">${esc(state.local.error)}</div>`; return; }
-  if (!state.local.entries.length) { host.innerHTML = '<div class="empty">空目录</div>'; return; }
-  host.innerHTML = state.local.entries.map((entry) => {
-    const full = joinLocal(state.local.path, entry.name);
-    return `<div class="lrow ${entry.isDir ? 'dir' : 'file'}" data-dir="${entry.isDir}" data-full="${esc(full)}" data-size="${entry.size || 0}" data-time="${esc(entry.modTime || '')}">
-      <span class="icon">${entry.isDir ? '📁' : '📄'}</span>
-      <span class="lname" title="${esc(full)}">${esc(entry.name)}</span>
-      <span class="lsize">${entry.isDir ? '' : esc(fmtSize(entry.size))}</span>
-    </div>`;
-  }).join('');
-  host.querySelectorAll('.lrow').forEach((row) => {
-    row.draggable = true;
-    row.ondragstart = (e) => {
-      e.dataTransfer.effectAllowed = 'copy';
-      e.dataTransfer.setData('application/x-oss-local', row.dataset.full);
-    };
-    // 单击本地项，在状态栏显示完整路径、类型、大小与修改时间。
-    row.onclick = () => {
-      host.querySelectorAll('.lrow').forEach((item) => item.classList.toggle('selected', item === row));
-      const isDir = row.dataset.dir === 'true';
-      const size = Number(row.dataset.size || 0);
-      const kind = isDir ? '目录' : `文件 ${fmtSize(size)}`;
-      setStatus(`本地 · ${row.dataset.full} · ${kind} · 修改时间 ${row.dataset.time || '未知'}`);
-    };
-    row.ondblclick = () => {
-      if (row.dataset.dir === 'true') navigateLocal(row.dataset.full);
-      else api().OpenFolder(row.dataset.full).catch(() => {});
-    };
-    row.oncontextmenu = (e) => {
-      e.preventDefault();
-      const full = row.dataset.full;
-      const isDir = row.dataset.dir === 'true';
-      showMenu(e.clientX, e.clientY, [
-        ...(isDir ? [{ label: '进入', action: () => navigateLocal(full) }, { separator: true }] : []),
-        { label: '上传到当前远程目录', action: () => uploadLocalPath(full) },
-        { separator: true },
-        { label: '复制路径', action: () => { api().SetClipboard(full); notify('已复制：' + full); } },
-        { label: '在资源管理器中打开', action: () => api().OpenFolder(isDir ? full : dirOf(full)).catch((err) => notify('打开失败：' + err, true)) },
-      ]);
-    };
-  });
-  host.ondragover = (e) => {
-    if (e.dataTransfer.types.includes('application/x-oss-remote')) {
-      e.preventDefault();
-      host.classList.add('drop-target');
-    }
-  };
-  host.ondragleave = () => host.classList.remove('drop-target');
-  host.ondrop = async (e) => {
-    const remotePath = e.dataTransfer.getData('application/x-oss-remote');
-    if (!remotePath) return;
-    e.preventDefault();
-    host.classList.remove('drop-target');
-    setStatus('正在下载到 ' + state.local.path + ' …');
-    try {
-      const local = await api().Download(remotePath, state.local.path);
-      await navigateLocal(state.local.path);
-      notify('已下载到 ' + local);
-    } catch (err) { notify('下载失败：' + err, true); }
-  };
-}
-
 async function uploadLocalPath(full) {
-  const target = await chooseUploadTarget();
+  const target = await chooseUploadTarget(true);
   if (!target) return;
   const remoteDir = target.name + ':' + target.path;
   setStatus('正在上传 ' + full + ' 到 ' + target.label + ' …');
@@ -1946,8 +1903,10 @@ async function confirmNet() {
   setStatus('正在连接 ' + path + ' …');
   try {
     await api().MountNetworkLocation(path, user, password);
+    await refresh();
     await initLocal();
-    await navigateLocal(path);
+    const share = state.shares.find((item) => item.remote === path);
+    openLocalTab((share && share.local) || path, share ? shareLabel(share) : path);
     notify('已连接 ' + path);
   } catch (err) { notify('连接失败：' + err, true); }
 }
@@ -1980,7 +1939,7 @@ async function mountRemote(name) {
   state.mountTarget = name;
   const select = document.getElementById('mount-drive');
   select.innerHTML = drives.map((drive) => `<option value="${esc(drive)}">${esc(drive)}</option>`).join('');
-  document.getElementById('mount-volume').value = name;
+  document.getElementById('mount-volume').value = connLabel(name);
   document.getElementById('mount-dialog').showModal();
 }
 
@@ -2063,7 +2022,12 @@ async function confirmShareEdit() {
 
 async function unmountShare(share) {
   if (!share) return;
-  if (!confirm('断开映射 ' + shareLabel(share) + '？\n\n' + share.remote)) return;
+  const result = await showConfirm({
+    title: '断开共享映射',
+    text: `${shareLabel(share)}\n\n${share.remote}`,
+    okText: '断开映射',
+  });
+  if (!result.ok) return;
   try {
     await api().UnmountNetworkLocation(share.remote);
     await refresh();
@@ -2091,13 +2055,18 @@ async function openEdit(name) {
   document.getElementById('edit-secret-eye').textContent = '👁';
   const fields = { 'edit-name': '', 'edit-endpoint': '', 'edit-account': '', 'edit-region': '', 'edit-volume': '' };
   Object.keys(fields).forEach((id) => { document.getElementById(id).value = fields[id]; });
-  document.getElementById('edit-name').disabled = !!name;
+  document.getElementById('edit-name').disabled = false;
+  document.getElementById('edit-name-hint').textContent = name
+    ? '这里修改的是界面显示名称，连接标识与已有挂载保持不变。'
+    : '新建连接时名称同时作为连接标识，不能包含空格或方括号。';
   document.getElementById('edit-type').value = 'minio';
   let info = { drive: '', volume: '' };
+  let displayName = '';
   if (name) {
     try {
       const def = await api().GetConnection(name);
-      document.getElementById('edit-name').value = def.name || name;
+      displayName = def.displayName || def.name || name;
+      document.getElementById('edit-name').value = displayName;
       document.getElementById('edit-type').value = def.type || 'minio';
       document.getElementById('edit-endpoint').value = def.endpoint || '';
       document.getElementById('edit-account').value = def.account || '';
@@ -2118,16 +2087,22 @@ async function openEdit(name) {
   select.innerHTML = options;
   select.value = info.drive || '';
   const volume = document.getElementById('edit-volume');
-  volume.value = info.volume || name || '';
-  volume.placeholder = name || '与名称一致';
+  volume.value = info.volume || displayName || name || '';
+  volume.placeholder = displayName || name || '与名称一致';
   document.getElementById('edit-dialog').showModal();
 }
 
+// sanitizeRemoteName 去掉段名不允许的空白与方括号，保住新建连接可用。
+function sanitizeRemoteName(value) {
+  return String(value || '').replace(/[\[\]\s]+/g, '_').replace(/^_+|_+$/g, '');
+}
+
 function readConnectionForm() {
-  const name = document.getElementById('edit-name').value.trim();
+  const typed = document.getElementById('edit-name').value.trim();
+  const internal = state.editing || sanitizeRemoteName(typed);
   return {
-    name,
-    displayName: name,
+    name: internal,
+    displayName: typed || internal,
     type: document.getElementById('edit-type').value,
     endpoint: document.getElementById('edit-endpoint').value.trim(),
     account: document.getElementById('edit-account').value.trim(),
@@ -2152,13 +2127,14 @@ async function saveConnection() {
   const def = readConnectionForm();
   const isNew = !state.editing;
   const drive = document.getElementById('edit-drive').value;
-  const volume = document.getElementById('edit-volume').value.trim() || def.name;
+  const volume = document.getElementById('edit-volume').value.trim() || def.displayName || def.name;
   let previous = { drive: '', volume: '' };
   try {
     if (!isNew) previous = (await api().GetMountInfo(state.editing)) || previous;
     await api().SaveConnection(def, !isNew);
     document.getElementById('edit-dialog').close();
     await refresh();
+    renderTabs();
     notify('连接已保存');
     await applyMountChoice(def.name, drive, volume, previous);
   } catch (err) { setStatus('保存失败：' + err, true); }
@@ -2192,7 +2168,12 @@ async function unmountRemoteQuiet(name) {
 }
 
 async function deleteConnection(name) {
-  if (!confirm('确定删除连接 ' + name + '？')) return;
+  const result = await showConfirm({
+    title: '删除连接',
+    text: `${connLabel(name)}\n\n连接配置、挂载与开机恢复记录都会一并移除，且不可恢复。`,
+    okText: '删除连接',
+  });
+  if (!result.ok) return;
   try { await api().DeleteConnection(name); await refresh(); notify('已删除'); }
   catch (err) { setStatus('删除失败：' + err, true); }
 }
@@ -2276,15 +2257,16 @@ function chooseOption(title, options) {
   });
 }
 
-// chooseUploadTarget 让用户选择上传到哪个已打开的远程页签；只有一个时直接使用。
-async function chooseUploadTarget() {
+// chooseUploadTarget 让用户选择上传到哪个已打开的远程页签；只有一个时默认使用，
+// force 为真时即使只有一个也弹窗确认（此电脑里的上传按钮需要明确目标）。
+async function chooseUploadTarget(force = false) {
   const tabs = tabOrder.map((name) => {
     const path = name === state.active ? state.path : (cacheOf(name).path || '');
-    const label = `${name} / ${path || '/'}`;
+    const label = `${connLabel(name)} / ${path || '/'}`;
     return { name, path, label };
   });
   if (!tabs.length) { notify('请先打开一个远程页签', true); return null; }
-  if (tabs.length === 1) return tabs[0];
+  if (tabs.length === 1 && !force) return tabs[0];
   return await chooseOption('上传到哪个页签', tabs);
 }
 
@@ -2362,7 +2344,12 @@ async function renameEntry(name) {
 }
 
 async function deleteEntry(name, isDir) {
-  if (!window.confirm('确定删除 ' + name + (isDir ? '（目录及其内容）' : '') + '？')) return;
+  const result = await showConfirm({
+    title: isDir ? '删除目录' : '删除文件',
+    text: `${name}\n\n${isDir ? '目录及其内容将被删除' : '文件将被删除'}，且不可恢复。`,
+    okText: '删除',
+  });
+  if (!result.ok) return;
   const target = state.active + ':' + (state.path ? state.path + '/' : '') + name;
   setStatus('正在删除…');
   try { await api().Delete(target, isDir); await loadEntries(); notify('已删除'); }
@@ -2496,7 +2483,7 @@ function downloadTargetItems(name) {
     items.push({ separator: true }, { header: true, label: '已打开的页签' });
     opened.forEach((tab) => {
       const dir = tab + ':' + (cacheOf(tab).path || '');
-      const label = `${tab} / ${cacheOf(tab).path || '/'}`;
+      const label = `${connLabel(tab)} / ${cacheOf(tab).path || '/'}`;
       items.push({ label, action: () => copyRemotePathsTo(paths, dir, label) });
     });
   }
@@ -2504,7 +2491,7 @@ function downloadTargetItems(name) {
   if (closed.length) {
     items.push({ separator: true }, { header: true, label: '其他已保存连接（未打开）' });
     closed.forEach((conn) => {
-      items.push({ label: `远程 / ${conn.name}`, action: () => copyRemotePathsTo(paths, conn.name + ':', `${conn.name} /（根目录）`) });
+      items.push({ label: `远程 / ${conn.displayName || conn.name}`, action: () => copyRemotePathsTo(paths, conn.name + ':', `${conn.displayName || conn.name} /（根目录）`) });
     });
   }
   if (!items.length) items.push({ label: '没有可用的目标', action: () => notify('没有其他页签或已保存连接', true) });
@@ -2572,9 +2559,9 @@ async function downloadFolderToTarget(remotePath) {
   } catch (err) { notify('下载失败：' + err, true); }
 }
 
-async function uploadPaths(paths) {
+async function uploadPaths(paths, force) {
   if (!paths.length) return;
-  const target = await chooseUploadTarget();
+  const target = await chooseUploadTarget(force);
   if (!target) return;
   const remoteDir = target.name + ':' + target.path;
   let ok = 0, fail = 0, firstError = '';
@@ -2878,7 +2865,7 @@ async function refreshDownloadList() {
       <td class="htime">${esc(item.time)}</td>
       <td class="hremote" title="${esc(item.remote)}">${esc(item.remote)}</td>
       <td class="hpath" title="${esc(item.localPath)}">${esc(item.localPath)}</td>
-      <td class="hops"><button id="transfer-open-${index}" data-open="1" title="在连接中打开并定位">📍</button><button id="transfer-del-${index}" data-del="1" title="删除记录">🗑</button></td>
+      <td class="hops"><button id="transfer-open-${index}" data-open="1" title="在连接中打开并定位">📍</button><button id="transfer-del-${index}" data-del="1" class="danger-op" title="删除记录">🗑</button></td>
     </tr>`;
   }).join('');
   host.innerHTML = `<table class="history-table">
@@ -2939,20 +2926,30 @@ function openTransferInConnection(remotePath) {
   renderTabs();
 }
 
-// 删除传输记录，并询问是否同时删除本地文件。
+// 删除传输记录，可勾选同时删除本地文件。
 async function deleteDownloadRecord(path) {
   if (!path) return;
-  if (!confirm('删除这条传输记录？')) return;
-  const removeFile = confirm('是否同时删除本地文件？\n\n' + path + '\n\n确定 = 删除文件；取消 = 仅删除记录');
+  const result = await showConfirm({
+    title: '删除传输记录',
+    text: path,
+    okText: '删除记录',
+    checkboxLabel: '同时删除本地文件',
+  });
+  if (!result.ok) return;
   try {
-    await api().RemoveDownload(path, removeFile);
+    await api().RemoveDownload(path, result.checked);
     await refreshDownloadList();
-    notify(removeFile ? '记录与本地文件已删除' : '记录已删除');
+    notify(result.checked ? '记录与本地文件已删除' : '记录已删除');
   } catch (err) { notify('删除失败：' + err, true); }
 }
 
 async function clearHistory() {
-  if (!confirm('确定清空全部传输记录？正在传输的任务不受影响。')) return;
+  const result = await showConfirm({
+    title: '清空传输记录',
+    text: '全部传输记录将被清空，正在传输的任务不受影响。',
+    okText: '清空',
+  });
+  if (!result.ok) return;
   try {
     await api().ClearDownloadHistory();
     await api().ClearDownloadTasks();
@@ -2973,8 +2970,8 @@ async function openAbout() {
     const info = await api().GetAbout();
     document.getElementById('about-info').innerHTML = `
       <p>程序版本：${esc(info.appVersion)}</p>
-      <p>rclone 库版本：${esc(info.rcloneVersion)}</p>
-      <p>rclone 配置：${esc(info.configPath)}</p>
+      <p>连接内核版本：${esc(info.rcloneVersion)}</p>
+      <p>连接配置：${esc(info.configPath)}</p>
       <p>数据目录：${esc(info.dataDir)}</p>
       <p>日志文件：${esc(info.logPath)}</p>`;
     document.getElementById('about-dialog').showModal();
@@ -3018,7 +3015,7 @@ async function exportBundle() {
 async function importBundle() {
   const path = await api().PickFile();
   if (!path) return;
-  if (!confirm('导入配置包将覆盖当前设置、rclone 配置与挂载记录（原文件备份为 .bak），继续？')) return;
+  if (!confirm('导入配置包将覆盖当前设置、连接配置与挂载记录（原文件备份为 .bak），继续？')) return;
   try {
     const msg = await api().ImportBundle(path);
     state.settings = await api().GetSettings();
@@ -3028,7 +3025,7 @@ async function importBundle() {
   } catch (err) { notify('导入配置包失败：' + err, true); }
 }
 
-async function saveSettings() {
+async function saveSettings(closeAfter = false) {
   const next = {
     ...state.settings,
     rcloneConfig: document.getElementById('set-config').value.trim(),
@@ -3047,8 +3044,42 @@ async function saveSettings() {
     downloadDirectory: document.getElementById('set-download-dir').value.trim(),
     dragMode: document.getElementById('set-drag-mode').value,
   };
-  try { await api().SaveSettings(next); state.settings = next; document.getElementById('settings-dialog').close(); updateAutoSizeButton(); await refresh(); setStatus('设置已保存'); }
-  catch (err) { setStatus('保存设置失败：' + err, true); }
+  try {
+    await api().SaveSettings(next);
+    state.settings = next;
+    updateAutoSizeButton();
+    await refresh();
+    if (closeAfter) document.getElementById('settings-dialog').close();
+    notify(closeAfter ? '设置已保存并关闭' : '设置已保存');
+  } catch (err) { setStatus('保存设置失败：' + err, true); }
+}
+
+// ===== 通用确认框：与主题一致的删除确认，替代系统原生 confirm =====
+let confirmResolve = null;
+
+function showConfirm({ title, text, okText = '删除', checkboxLabel = '' }) {
+  return new Promise((resolve) => {
+    confirmResolve = resolve;
+    document.getElementById('confirm-title').textContent = title;
+    document.getElementById('confirm-text').textContent = text || '';
+    const ok = document.getElementById('confirm-ok');
+    ok.textContent = okText;
+    const checkRow = document.getElementById('confirm-check-row');
+    const check = document.getElementById('confirm-check');
+    check.checked = false;
+    document.getElementById('confirm-check-label').textContent = checkboxLabel;
+    checkRow.style.display = checkboxLabel ? 'flex' : 'none';
+    document.getElementById('confirm-dialog').showModal();
+  });
+}
+
+function finishConfirm(ok) {
+  const resolve = confirmResolve;
+  confirmResolve = null;
+  const dialog = document.getElementById('confirm-dialog');
+  const checked = document.getElementById('confirm-check').checked;
+  if (dialog.open) dialog.close();
+  if (resolve) resolve({ ok, checked });
 }
 
 boot();
