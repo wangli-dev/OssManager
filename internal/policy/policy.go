@@ -43,8 +43,8 @@ func Put(ctx context.Context, confPath, remote, bucket, policyText string) error
 
 // Grant 是 ACL 中一条授权，供界面只读展示。
 type Grant struct {
-	Grantee string `json:"grantee"`
-	Type    string `json:"type"`
+	Grantee    string `json:"grantee"`
+	Type       string `json:"type"`
 	Permission string `json:"permission"`
 }
 
@@ -55,7 +55,8 @@ type ACL struct {
 }
 
 // GetACL 读取桶 ACL 摘要。
-func GetACL(ctx context.Context, confPath, remote, bucket string) (ACL, error) {	client := clientFor(confPath, remote)
+func GetACL(ctx context.Context, confPath, remote, bucket string) (ACL, error) {
+	client := clientFor(confPath, remote)
 	out, err := client.GetBucketAcl(ctx, &s3.GetBucketAclInput{Bucket: aws.String(bucket)})
 	if err != nil {
 		return ACL{}, err

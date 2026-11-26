@@ -6,6 +6,14 @@ export function CheckUpdate() {
   return window['go']['main']['App']['CheckUpdate']();
 }
 
+export function ClearDownloadHistory() {
+  return window['go']['main']['App']['ClearDownloadHistory']();
+}
+
+export function ClearDownloadTasks() {
+  return window['go']['main']['App']['ClearDownloadTasks']();
+}
+
 export function CopyRemoteToClipboard(arg1) {
   return window['go']['main']['App']['CopyRemoteToClipboard'](arg1);
 }
@@ -34,12 +42,20 @@ export function DownloadFolder(arg1, arg2) {
   return window['go']['main']['App']['DownloadFolder'](arg1, arg2);
 }
 
+export function DownloadHistory() {
+  return window['go']['main']['App']['DownloadHistory']();
+}
+
+export function DownloadTasks() {
+  return window['go']['main']['App']['DownloadTasks']();
+}
+
 export function DownloadUpdate(arg1) {
   return window['go']['main']['App']['DownloadUpdate'](arg1);
 }
 
-export function ExportConnections(arg1, arg2) {
-  return window['go']['main']['App']['ExportConnections'](arg1, arg2);
+export function ExportConnections(arg1, arg2, arg3) {
+  return window['go']['main']['App']['ExportConnections'](arg1, arg2, arg3);
 }
 
 export function FreeDrives() {
@@ -70,8 +86,8 @@ export function GetSettings() {
   return window['go']['main']['App']['GetSettings']();
 }
 
-export function ImportConnections(arg1) {
-  return window['go']['main']['App']['ImportConnections'](arg1);
+export function ImportConnections(arg1, arg2) {
+  return window['go']['main']['App']['ImportConnections'](arg1, arg2);
 }
 
 export function List(arg1) {
@@ -82,8 +98,16 @@ export function ListConnections() {
   return window['go']['main']['App']['ListConnections']();
 }
 
+export function ListLocal(arg1) {
+  return window['go']['main']['App']['ListLocal'](arg1);
+}
+
 export function ListMounts() {
   return window['go']['main']['App']['ListMounts']();
+}
+
+export function LocalDrives() {
+  return window['go']['main']['App']['LocalDrives']();
 }
 
 export function Mkdir(arg1) {
@@ -92,6 +116,10 @@ export function Mkdir(arg1) {
 
 export function Mount(arg1, arg2, arg3) {
   return window['go']['main']['App']['Mount'](arg1, arg2, arg3);
+}
+
+export function MountNetworkLocation(arg1, arg2, arg3) {
+  return window['go']['main']['App']['MountNetworkLocation'](arg1, arg2, arg3);
 }
 
 export function Move(arg1, arg2) {
@@ -104,6 +132,10 @@ export function ObjectInfo(arg1) {
 
 export function OpenDataDir() {
   return window['go']['main']['App']['OpenDataDir']();
+}
+
+export function OpenDownloadFolder(arg1) {
+  return window['go']['main']['App']['OpenDownloadFolder'](arg1);
 }
 
 export function OpenFolder(arg1) {
@@ -184,6 +216,10 @@ export function Unmount(arg1) {
 
 export function UnmountByRemote(arg1) {
   return window['go']['main']['App']['UnmountByRemote'](arg1);
+}
+
+export function UnmountNetworkLocation(arg1) {
+  return window['go']['main']['App']['UnmountNetworkLocation'](arg1);
 }
 
 export function Upload(arg1, arg2) {

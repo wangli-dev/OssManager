@@ -1,10 +1,10 @@
 package shelldrag
 
 import (
+	"golang.org/x/sys/windows"
 	"os"
 	"testing"
 	"unsafe"
-	"golang.org/x/sys/windows"
 )
 
 // makeHDrop 生成的内存块应含 DROPFILES 头与双零结尾的 UTF-16 路径表。

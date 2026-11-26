@@ -12,6 +12,8 @@ const state = {
   editing: null,
   selected: null,
   multi: new Set(),
+  local: { path: '', entries: [], drives: [], visible: true },
+  crumbsVisible: false,
 };
 
 let dragName = null;
@@ -95,16 +97,34 @@ function renderShell() {
       <button id="btn-unmount">卸载</button>
       <button id="btn-upload">上传</button>
       <button id="btn-download">下载</button>
-      <button id="btn-import">导入</button>
-      <button id="btn-export">导出</button>
+      <button id="btn-history">下载记录</button>
       <div class="actions">
-        <button id="btn-theme">切换主题</button>
+        <button id="btn-crumbs">路径栏</button>
+        <button id="btn-local">本地栏</button>
+        <button id="btn-import">导入</button>
+        <button id="btn-export">导出</button>
+        <button id="btn-theme">主题</button>
         <button id="btn-about">关于</button>
         <button id="btn-settings">设置</button>
       </div>
     </header>
     <main>
-      <aside><div class="list-title">连接</div><div id="connections"></div></aside>
+      <aside id="conn-pane"><div class="list-title">连接</div><div id="connections"></div></aside>
+      <div class="resizer" data-target="conn-pane" title="拖动调整宽度"></div>
+      <section class="local" id="local-pane">
+        <div class="pane-head">
+          <button id="local-up" title="上级目录">↑</button>
+          <select id="local-drives" title="盘符"></select>
+          <button id="local-net" title="连接局域网共享">网络</button>
+          <button id="local-hide" title="隐藏本地栏">✕</button>
+        </div>
+        <div class="local-pathbar">
+          <div id="local-crumbs" class="local-crumbs"></div>
+          <button id="local-edit" title="手动输入路径">✎</button>
+        </div>
+        <div id="local-entries"></div>
+      </section>
+      <div class="resizer" data-target="local-pane" title="拖动调整宽度"></div>
       <section class="files">
         <div class="crumbs" id="crumbs"></div>
         <div id="entries"></div>
@@ -182,6 +202,12 @@ function renderShell() {
       <label>传输缓冲</label><input id="set-buffer" />
       <label>并发传输数（下载/上传同时进行）</label>
       <input id="set-transfers" type="number" min="1" max="16" />
+      <label>默认下载目录（留空则每次询问）</label><input id="set-download-dir" placeholder="例如 D:\Downloads" />
+      <label>拖拽远程文件时</label>
+      <select id="set-drag-mode">
+        <option value="panes">拖到本地栏（页内传输）</option>
+        <option value="shell">拖到资源管理器（复制落盘）</option>
+      </select>
       <div class="row">
         <button id="set-export-bundle">导出配置包…</button>
         <button id="set-import-bundle">导入配置包…</button>
@@ -238,6 +264,47 @@ function renderShell() {
       <textarea id="log-text" rows="20" readonly></textarea>
       <div class="footer"><button id="log-close" class="primary">关闭</button></div>
     </dialog>
+    <dialog id="history-dialog">
+      <h2>下载记录</h2>
+      <div class="section-title">正在下载 <span id="task-count" class="count"></span></div>
+      <div id="task-list" class="history-list task-list"></div>
+      <div class="section-title">历史记录</div>
+      <div id="history-list" class="history-list"></div>
+      <div class="footer">
+        <button id="history-clear">清空记录</button>
+        <button id="history-close" class="primary">关闭</button>
+      </div>
+    </dialog>
+    <dialog id="export-dialog">
+      <h2>导出连接</h2>
+      <label class="chk"><input type="checkbox" id="export-secrets" /> 包含账号与密钥（导出文件可看到凭证）</label>
+      <label class="chk"><input type="checkbox" id="export-settings" /> 包含程序设置（下载目录、缓存、主题等）</label>
+      <label>文件名</label><input id="export-name" />
+      <div class="footer">
+        <button id="export-cancel">取消</button>
+        <button id="export-ok" class="primary">选择位置并导出</button>
+      </div>
+    </dialog>
+    <dialog id="import-dialog">
+      <h2>导入连接</h2>
+      <p id="import-path" class="hint"></p>
+      <label class="chk"><input type="checkbox" id="import-settings" /> 文件包含程序设置时一并恢复</label>
+      <p class="hint">导入会按名称新增或更新连接，不会删除现有连接。</p>
+      <div class="footer">
+        <button id="import-cancel">取消</button>
+        <button id="import-ok" class="primary">开始导入</button>
+      </div>
+    </dialog>
+    <dialog id="net-dialog">
+      <h2>连接局域网共享</h2>
+      <label>共享路径（如 \\\\192.168.1.10\\project）</label><input id="net-path" />
+      <label>用户名（留空使用当前登录身份）</label><input id="net-user" />
+      <label>密码</label><input id="net-pass" type="password" />
+      <div class="footer">
+        <button id="net-cancel">取消</button>
+        <button id="net-ok" class="primary">连接</button>
+      </div>
+    </dialog>
   `;
   statusEl = document.getElementById('status');
   document.getElementById('btn-new').onclick = () => openEdit(null);
@@ -251,6 +318,25 @@ function renderShell() {
   document.getElementById('btn-theme').onclick = toggleTheme;
   document.getElementById('btn-about').onclick = openAbout;
   document.getElementById('btn-settings').onclick = openSettings;
+  document.getElementById('btn-history').onclick = openHistory;
+  document.getElementById('btn-local').onclick = () => toggleLocal();
+  document.getElementById('local-up').onclick = localUp;
+  document.getElementById('local-hide').onclick = () => toggleLocal(false);
+  document.getElementById('local-net').onclick = openNetDialog;
+  document.getElementById('local-drives').onchange = (e) => navigateLocal(e.target.value);
+  document.getElementById('local-edit').onclick = editLocalPath;
+  document.getElementById('btn-crumbs').onclick = toggleCrumbs;
+  bindResizers();
+  restorePaneWidths();
+  document.getElementById('history-close').onclick = () => document.getElementById('history-dialog').close();
+  document.getElementById('history-dialog').addEventListener('close', () => stopTaskRefresh());
+  document.getElementById('history-clear').onclick = clearHistory;
+  document.getElementById('export-cancel').onclick = () => document.getElementById('export-dialog').close();
+  document.getElementById('export-ok').onclick = confirmExport;
+  document.getElementById('import-cancel').onclick = () => document.getElementById('import-dialog').close();
+  document.getElementById('import-ok').onclick = confirmImport;
+  document.getElementById('net-cancel').onclick = () => document.getElementById('net-dialog').close();
+  document.getElementById('net-ok').onclick = confirmNet;
   document.getElementById('about-close').onclick = () => document.getElementById('about-dialog').close();
   document.getElementById('about-update').onclick = checkUpdate;
   document.getElementById('mount-cancel').onclick = () => document.getElementById('mount-dialog').close();
@@ -288,6 +374,8 @@ async function boot() {
     state.settings = await api().GetSettings();
     applyTheme();
     await refresh();
+    await initLocal();
+    toggleCrumbs(localStorage.getItem('ossmanager.crumbs') === '1');
   } catch (err) { setStatus('启动失败：' + err, true); }
 }
 
@@ -390,7 +478,7 @@ async function loadEntries() {
   try {
     state.entries = (await api().List(remote)) || [];
     renderEntries();
-    setStatus(remote + '，' + state.entries.length + ' 项');
+    updateFooter();
   } catch (err) {
     // 失败不再渲染空表（看起来像正常），改为列表区显示错误卡片并给出分类提示。
     state.entries = [];
@@ -401,8 +489,24 @@ async function loadEntries() {
   }
 }
 
+// updateFooter 在状态栏汇总当前目录的路径、文件数、目录数与大小。
+function updateFooter(extra) {
+  if (!state.active) {
+    setStatus(extra || `共 ${state.connections.length} 个连接`);
+    return;
+  }
+  const files = state.entries.filter((entry) => !entry.isDir);
+  const dirs = state.entries.length - files.length;
+  const total = files.reduce((sum, entry) => sum + (entry.size || 0), 0);
+  const remote = state.active + ':' + state.path;
+  let text = `${remote} · ${state.entries.length} 项（文件 ${files.length}，目录 ${dirs}）· ${fmtSize(total)}`;
+  if (extra) text += ' · ' + extra;
+  setStatus(text);
+}
+
 function renderEntries() {
   const crumbs = document.getElementById('crumbs');
+  crumbs.style.display = state.crumbsVisible ? 'flex' : 'none';
   if (!state.active) {
     crumbs.innerHTML = '<span>开始使用</span>';
     document.getElementById('entries').innerHTML = `
@@ -458,6 +562,25 @@ function renderEntries() {
   }).join('');
   host.innerHTML = `<table><thead><tr><th>名称</th><th class="size">大小</th><th class="time">修改时间</th><th class="ops">操作</th></tr></thead><tbody>${rows}</tbody></table>`;
   host.querySelectorAll('tr.row').forEach((row) => {
+    row.draggable = true;
+    row.ondragstart = (e) => {
+      const remotePath = state.active + ':' + (state.path ? state.path + '/' : '') + row.dataset.name;
+      if (state.settings && state.settings.dragMode === 'shell') {
+        e.preventDefault();
+        if (row.dataset.dir === 'true') { toast('目录拖出暂不支持，请使用右键「下载目录…」'); return; }
+        const prefix = state.active + ':' + (state.path ? state.path + '/' : '');
+        const paths = state.multi.size > 1 && state.multi.has(row.dataset.name)
+          ? Array.from(state.multi).map((name) => prefix + name)
+          : [remotePath];
+        setStatus('正在准备拖拽（下载到本地缓存，请按住鼠标不放）…');
+        api().DragOutFiles(paths)
+          .then((message) => setStatus(message))
+          .catch((err) => setStatus('拖拽失败：' + err, true));
+        return;
+      }
+      e.dataTransfer.effectAllowed = 'copy';
+      e.dataTransfer.setData('application/x-oss-remote', remotePath);
+    };
     row.onclick = (e) => {
       const name = row.dataset.name;
       if (e.ctrlKey || e.metaKey) {
@@ -471,6 +594,10 @@ function renderEntries() {
       state.selected = state.multi.has(name)
         ? { name, isDir: row.dataset.dir === 'true', path: state.active + ':' + (state.path ? state.path + '/' : '') + name }
         : null;
+      const picked = state.entries.find((item) => item.name === name);
+      updateFooter(state.selected && picked
+        ? `选中：${name}${picked.isDir ? '（目录）' : '（' + fmtSize(picked.size) + '）'}`
+        : (state.multi.size > 1 ? `已选 ${state.multi.size} 项` : undefined));
     };
     // 文件拖出：按住鼠标开始拖动时先下载到缓存，再交给系统拖放循环拖到资源管理器。
     row.draggable = true;
@@ -531,8 +658,8 @@ function renderEntries() {
         items.push({ label: '对象属性…', action: () => showInfo(remotePath) });
         items.push({ label: '设置过期…', action: () => setExpiry(remotePath) });
       }
-      items.push({ label: '复制路径', action: () => copyPath(remotePath, true) });
-      items.push({ label: '复制 rclone 路径', action: () => copyPath(remotePath, false) });
+      items.push({ label: '复制绝对路径', action: () => copyPath(remotePath, true) });
+      items.push({ label: '复制相对路径', action: () => copyPath(remotePath, false) });
       items.push({ label: '重命名…', action: () => renameEntry(name, isDir) });
       items.push({ label: '新建目录…', action: () => createDir() });
       items.push({ label: '上传文件夹…', action: () => uploadFolder() });
@@ -542,6 +669,261 @@ function renderEntries() {
       showMenu(e.clientX, e.clientY, items);
     };
   });
+  host.ondragover = (e) => {
+    if (e.dataTransfer.types.includes('application/x-oss-local')) {
+      e.preventDefault();
+      host.classList.add('drop-target');
+    }
+  };
+  host.ondragleave = () => host.classList.remove('drop-target');
+  host.ondrop = (e) => {
+    const localPath = e.dataTransfer.getData('application/x-oss-local');
+    if (!localPath) return;
+    e.preventDefault();
+    host.classList.remove('drop-target');
+    uploadLocalPath(localPath);
+  };
+}
+
+// ===== 本地文件栏 =====
+const LOCAL_KEY = 'ossmanager.local.path';
+
+async function initLocal() {
+  try {
+    state.local.drives = (await api().LocalDrives()) || [];
+    const select = document.getElementById('local-drives');
+    select.innerHTML = state.local.drives.map((drive) => {
+      const root = drive.root.replace(/\\$/, '');
+      const letter = root.charAt(0).toUpperCase();
+      const label = drive.label && drive.label !== letter ? root + ' ' + drive.label : drive.root;
+      return `<option value="${esc(drive.root)}">${esc(label)}</option>`;
+    }).join('');
+  } catch (err) { /* 盘符读取失败不影响远程浏览 */ }
+  const saved = localStorage.getItem(LOCAL_KEY) || '';
+  const preset = (state.settings && state.settings.downloadDirectory) || '';
+  const first = state.local.drives[0] ? state.local.drives[0].root : 'C:\\';
+  state.local.path = saved || preset || first;
+  state.local.visible = false;
+  document.getElementById('local-pane').style.display = 'none';
+  setLocalPath(state.local.path);
+}
+
+async function navigateLocal(path) {
+  const value = String(path || '').trim();
+  if (!value) return;
+  try {
+    state.local.entries = (await api().ListLocal(value)) || [];
+    state.local.error = '';
+    state.local.path = value;
+    localStorage.setItem(LOCAL_KEY, value);
+  } catch (err) {
+    state.local.entries = [];
+    state.local.error = '无法打开 ' + value + '：' + err;
+    state.local.path = value;
+  }
+  renderLocal();
+}
+
+function setLocalPath(path) {
+  const select = document.getElementById('local-drives');
+  if (select && path) {
+    const root = String(path).slice(0, 3).toUpperCase();
+    if (Array.from(select.options).some((option) => option.value.toUpperCase() === root)) select.value = root;
+  }
+  renderLocalCrumbs();
+}
+
+// splitLocalPath 把本地路径拆成根前缀与后续层级，用于面包屑。
+function splitLocalPath(path) {
+  const value = String(path || '').replace(/\//g, '\\');
+  const unc = value.match(/^\\\\([^\\]+)\\([^\\]+)(.*)$/);
+  if (unc) {
+    return { base: '\\\\' + unc[1] + '\\' + unc[2], rest: unc[3].split('\\').filter(Boolean) };
+  }
+  const drive = value.match(/^([A-Za-z]:)(.*)$/);
+  if (drive) return { base: drive[1] + '\\', rest: drive[2].split('\\').filter(Boolean) };
+  return { base: value, rest: [] };
+}
+
+function renderLocalCrumbs() {
+  const host = document.getElementById('local-crumbs');
+  if (!host) return;
+  const { base, rest } = splitLocalPath(state.local.path);
+  let accumulated = base;
+  let html = `<a href="#" data-path="${esc(base)}">${esc(base)}</a>`;
+  rest.forEach((part) => {
+    accumulated = accumulated.replace(/\\$/, '') + '\\' + part;
+    html += `<span class="sep">›</span><a href="#" data-path="${esc(accumulated)}">${esc(part)}</a>`;
+  });
+  host.innerHTML = html;
+  host.querySelectorAll('a[data-path]').forEach((link) => {
+    link.onclick = (e) => { e.preventDefault(); navigateLocal(link.dataset.path); };
+  });
+}
+
+async function editLocalPath() {
+  const value = await askInput('本地路径（支持 \\\\服务器\\共享）', state.local.path || '');
+  if (value) navigateLocal(value);
+}
+
+function toggleCrumbs(force) {
+  const visible = force === undefined ? !state.crumbsVisible : force;
+  state.crumbsVisible = visible;
+  const node = document.getElementById('crumbs');
+  if (node) node.style.display = visible ? 'flex' : 'none';
+  localStorage.setItem('ossmanager.crumbs', visible ? '1' : '0');
+}
+
+// bindResizers 让连接栏与本地栏的宽度可以拖动调整。
+function bindResizers() {
+  document.querySelectorAll('.resizer').forEach((bar) => {
+    bar.onmousedown = (event) => {
+      event.preventDefault();
+      const pane = document.getElementById(bar.dataset.target);
+      if (!pane) return;
+      const startX = event.clientX;
+      const startWidth = pane.getBoundingClientRect().width;
+      const move = (moveEvent) => {
+        const next = Math.max(150, Math.min(720, startWidth + moveEvent.clientX - startX));
+        pane.style.width = next + 'px';
+        pane.style.flex = '0 0 ' + next + 'px';
+      };
+      const up = () => {
+        document.removeEventListener('mousemove', move);
+        document.removeEventListener('mouseup', up);
+        localStorage.setItem('ossmanager.width.' + bar.dataset.target, pane.style.width);
+      };
+      document.addEventListener('mousemove', move);
+      document.addEventListener('mouseup', up);
+    };
+  });
+}
+
+function restorePaneWidths() {
+  document.querySelectorAll('.resizer').forEach((bar) => {
+    const saved = localStorage.getItem('ossmanager.width.' + bar.dataset.target);
+    const pane = document.getElementById(bar.dataset.target);
+    if (pane && saved) {
+      pane.style.width = saved;
+      pane.style.flex = '0 0 ' + saved;
+    }
+  });
+}
+
+function localUp() {
+  const value = String(state.local.path || '').replace(/[\\/]+$/, '');
+  if (!value) return;
+  const index = Math.max(value.lastIndexOf('\\'), value.lastIndexOf('/'));
+  if (index <= 2) { navigateLocal(value.slice(0, 3)); return; }
+  navigateLocal(value.slice(0, index));
+}
+
+function toggleLocal(force) {
+  state.local.visible = force === undefined ? !state.local.visible : force;
+  document.getElementById('local-pane').style.display = state.local.visible ? 'flex' : 'none';
+  if (!state.local.visible) return;
+  if (state.local.entries.length || state.local.error) renderLocal();
+  else navigateLocal(state.local.path);
+}
+
+function joinLocal(base, name) {
+  const value = String(base || '');
+  if (!value) return name;
+  if (/[\\/]$/.test(value)) return value + name;
+  return value + (value.includes('/') && !value.includes('\\') ? '/' : '\\') + name;
+}
+
+function dirOf(path) {
+  const value = String(path || '');
+  const index = Math.max(value.lastIndexOf('\\'), value.lastIndexOf('/'));
+  return index > 0 ? value.slice(0, index) : value;
+}
+
+function renderLocal() {
+  const host = document.getElementById('local-entries');
+  document.getElementById('local-pane').style.display = state.local.visible ? 'flex' : 'none';
+  setLocalPath(state.local.path);
+  if (state.local.error) { host.innerHTML = `<div class="empty">${esc(state.local.error)}</div>`; return; }
+  if (!state.local.entries.length) { host.innerHTML = '<div class="empty">空目录</div>'; return; }
+  host.innerHTML = state.local.entries.map((entry) => {
+    const full = joinLocal(state.local.path, entry.name);
+    return `<div class="lrow ${entry.isDir ? 'dir' : 'file'}" data-dir="${entry.isDir}" data-full="${esc(full)}">
+      <span class="icon">${entry.isDir ? '📁' : '📄'}</span>
+      <span class="lname" title="${esc(full)}">${esc(entry.name)}</span>
+      <span class="lsize">${entry.isDir ? '' : esc(fmtSize(entry.size))}</span>
+    </div>`;
+  }).join('');
+  host.querySelectorAll('.lrow').forEach((row) => {
+    row.draggable = true;
+    row.ondragstart = (e) => {
+      e.dataTransfer.effectAllowed = 'copy';
+      e.dataTransfer.setData('application/x-oss-local', row.dataset.full);
+    };
+    row.ondblclick = () => {
+      if (row.dataset.dir === 'true') navigateLocal(row.dataset.full);
+      else api().OpenFolder(row.dataset.full).catch(() => {});
+    };
+    row.oncontextmenu = (e) => {
+      e.preventDefault();
+      const full = row.dataset.full;
+      const isDir = row.dataset.dir === 'true';
+      showMenu(e.clientX, e.clientY, [
+        ...(isDir ? [{ label: '进入', action: () => navigateLocal(full) }] : []),
+        { label: '上传到当前远程目录', action: () => uploadLocalPath(full) },
+        { label: '复制路径', action: () => { api().SetClipboard(full); notify('已复制：' + full); } },
+        { label: '在资源管理器中打开', action: () => api().OpenFolder(isDir ? full : dirOf(full)).catch((err) => notify('打开失败：' + err, true)) },
+      ]);
+    };
+  });
+  host.ondragover = (e) => {
+    if (e.dataTransfer.types.includes('application/x-oss-remote')) {
+      e.preventDefault();
+      host.classList.add('drop-target');
+    }
+  };
+  host.ondragleave = () => host.classList.remove('drop-target');
+  host.ondrop = async (e) => {
+    const remotePath = e.dataTransfer.getData('application/x-oss-remote');
+    if (!remotePath) return;
+    e.preventDefault();
+    host.classList.remove('drop-target');
+    setStatus('正在下载到 ' + state.local.path + ' …');
+    try {
+      const local = await api().Download(remotePath, state.local.path);
+      await navigateLocal(state.local.path);
+      notify('已下载到 ' + local);
+    } catch (err) { notify('下载失败：' + err, true); }
+  };
+}
+
+async function uploadLocalPath(full) {
+  if (!state.active) { notify('请先选择远程连接', true); return; }
+  const remoteDir = state.active + ':' + state.path;
+  setStatus('正在上传 ' + full + ' …');
+  try { await api().UploadPath(remoteDir, full); await loadEntries(); notify('上传完成'); }
+  catch (err) { notify('上传失败：' + err, true); }
+}
+
+function openNetDialog() {
+  document.getElementById('net-path').value = '';
+  document.getElementById('net-user').value = '';
+  document.getElementById('net-pass').value = '';
+  document.getElementById('net-dialog').showModal();
+}
+
+async function confirmNet() {
+  const path = document.getElementById('net-path').value.trim();
+  if (!path) return;
+  const user = document.getElementById('net-user').value.trim();
+  const password = document.getElementById('net-pass').value;
+  document.getElementById('net-dialog').close();
+  setStatus('正在连接 ' + path + ' …');
+  try {
+    await api().MountNetworkLocation(path, user, password);
+    await initLocal();
+    await navigateLocal(path);
+    notify('已连接 ' + path);
+  } catch (err) { notify('连接失败：' + err, true); }
 }
 
 function enterDir(name) { state.selected = null; state.multi.clear(); state.path = state.path ? state.path + '/' + name : name; loadEntries(); }
@@ -700,6 +1082,9 @@ async function copyPath(remotePath, absolute) {
       const rest = remotePath.substring(remotePath.indexOf(':') + 1).replace(/^\//, '');
       value = connection.endpoint.replace(/\/$/, '') + '/' + rest;
     }
+  } else {
+    const colon = remotePath.indexOf(':');
+    value = colon >= 0 ? remotePath.slice(colon + 1).replace(/^\//, '') : remotePath;
   }
   api().SetClipboard(value);
   notify('已复制：' + value);
@@ -744,11 +1129,18 @@ async function deleteEntry(name, isDir) {
   catch (err) { notify('删除失败：' + err, true); }
 }
 
+// 有默认下载目录时直接使用，否则每次询问。
+async function chooseDownloadDir() {
+  const preset = (state.settings && state.settings.downloadDirectory) || '';
+  if (preset) return preset;
+  return await api().PickFolder();
+}
+
 async function downloadFolder(remotePath) {
-  const dir = await api().PickFolder();
+  const dir = await chooseDownloadDir();
   if (!dir) return;
   setStatus('正在下载目录…');
-  try { await api().DownloadFolder(remotePath, dir); notify('目录下载完成'); }
+  try { await api().DownloadFolder(remotePath, dir); notify('目录下载完成：' + dir); }
   catch (err) { notify('下载失败：' + err, true); }
 }
 
@@ -817,17 +1209,17 @@ async function downloadSelected() {
     return entry && !entry.isDir;
   });
   if (!names.length) { notify('请先选择文件', true); return; }
-  const dir = await api().PickFolder();
+  const dir = await chooseDownloadDir();
   if (!dir) return;
   const base = state.active + ':' + (state.path ? state.path + '/' : '');
   const paths = names.map((name) => base + name);
   setStatus('正在下载 ' + paths.length + ' 个文件…');
-  try { const message = await api().DownloadBatch(paths, dir); notify(message); }
+  try { const message = await api().DownloadBatch(paths, dir); notify(message + '（' + dir + '）'); }
   catch (err) { notify('下载失败：' + err, true); }
 }
 
 async function downloadEntry(name) {
-  const dir = await api().PickFolder();
+  const dir = await chooseDownloadDir();
   if (!dir) return;
   const remotePath = state.active + ':' + (state.path ? state.path + '/' : '') + name;
   setStatus('正在下载 ' + name + ' …');
@@ -1004,20 +1396,141 @@ async function savePolicy() {
   } catch (err) { notify('保存策略失败：' + err, true); }
 }
 
-async function exportJson() {
-  const path = await api().PickSaveFile('rclone-connections.json');
-  if (!path) return;
-  const includeSecrets = confirm('是否包含账号与密钥？包含后文件可看到凭证，请妥善保管。');
-  try { await api().ExportConnections(path, includeSecrets); notify('已导出到 ' + path); }
-  catch (err) { setStatus('导出失败：' + err, true); }
+function exportJson() {
+  const now = new Date();
+  const stamp = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`;
+  document.getElementById('export-name').value = `OssManager-连接-${stamp}.json`;
+  document.getElementById('export-secrets').checked = false;
+  document.getElementById('export-settings').checked = true;
+  document.getElementById('export-dialog').showModal();
 }
+
+async function confirmExport() {
+  const name = document.getElementById('export-name').value.trim() || 'OssManager-连接.json';
+  const includeSecrets = document.getElementById('export-secrets').checked;
+  const includeSettings = document.getElementById('export-settings').checked;
+  document.getElementById('export-dialog').close();
+  const path = await api().PickSaveFile(name);
+  if (!path) return;
+  try { await api().ExportConnections(path, includeSecrets, includeSettings); notify('已导出到 ' + path); }
+  catch (err) { notify('导出失败：' + err, true); }
+}
+
+let importTarget = '';
 
 async function importJson() {
   const path = await api().PickFile();
   if (!path) return;
-  if (!confirm('导入会按名称新增或更新连接。继续？')) return;
-  try { const msg = await api().ImportConnections(path); await refresh(); notify(msg); }
-  catch (err) { setStatus('导入失败：' + err, true); }
+  importTarget = path;
+  document.getElementById('import-path').textContent = path;
+  document.getElementById('import-settings').checked = false;
+  document.getElementById('import-dialog').showModal();
+}
+
+async function confirmImport() {
+  if (!importTarget) return;
+  const applySettings = document.getElementById('import-settings').checked;
+  document.getElementById('import-dialog').close();
+  try {
+    const message = await api().ImportConnections(importTarget, applySettings);
+    if (applySettings) {
+      state.settings = await api().GetSettings();
+      applyTheme();
+    }
+    await refresh();
+    notify(message);
+  } catch (err) { notify('导入失败：' + err, true); }
+}
+
+async function openHistory() {
+  try {
+    await refreshTasks();
+    await renderHistory();
+    document.getElementById('history-dialog').showModal();
+    startTaskRefresh();
+  } catch (err) { notify('读取下载记录失败：' + err, true); }
+}
+
+let taskTimer = null;
+
+function startTaskRefresh() {
+  stopTaskRefresh();
+  taskTimer = setInterval(refreshTasks, 800);
+}
+
+function stopTaskRefresh() {
+  if (taskTimer) { clearInterval(taskTimer); taskTimer = null; }
+}
+
+function fmtElapsed(ms) {
+  const total = Math.max(0, Math.round((ms || 0) / 1000));
+  const m = Math.floor(total / 60);
+  const s = total % 60;
+  return m > 0 ? `${m} 分 ${s} 秒` : `${s} 秒`;
+}
+
+let lastRunningCount = -1;
+
+async function refreshTasks() {
+  let tasks = [];
+  try { tasks = (await api().DownloadTasks()) || []; } catch (err) { return; }
+  const running = tasks.filter((task) => task.status === 'running');
+  document.getElementById('task-count').textContent = running.length ? `${running.length} 个` : '';
+  // 有任务结束时历史记录会新增一条，顺带刷新历史区。
+  if (lastRunningCount >= 0 && running.length < lastRunningCount) renderHistory();
+  lastRunningCount = running.length;
+  const host = document.getElementById('task-list');
+  if (!tasks.length) { host.innerHTML = '<div class="empty">没有下载任务</div>'; return; }
+  host.innerHTML = tasks.map((task) => {
+    const percent = task.total > 0 ? Math.min(100, Math.round((task.done / task.total) * 100)) : 0;
+    const badge = task.status === 'done' ? '<span class="badge done">完成</span>'
+      : task.status === 'error' ? '<span class="badge error">失败</span>'
+        : `<span class="badge">${percent}%</span>`;
+    const detail = task.status === 'running'
+      ? `${fmtSize(task.done)} / ${fmtSize(task.total)} · ${fmtSize(task.speed)}/s · 已用 ${fmtElapsed(task.elapsed)}`
+      : task.status === 'error'
+        ? esc(task.error || '下载失败')
+        : `${fmtSize(task.total)} · 耗时 ${fmtElapsed(task.elapsed)}`;
+    return `<div class="hline">
+      <div class="hname">${esc(task.name)} ${badge}</div>
+      <div class="hbar"><div class="hfill ${task.status}" style="width:${task.status === 'done' ? 100 : percent}%"></div></div>
+      <div class="hmeta">${detail}</div>
+      <div class="hpath" title="${esc(task.localPath || '')}">${esc(task.localPath || '')}</div>
+    </div>`;
+  }).join('');
+}
+
+async function renderHistory() {
+  const records = (await api().DownloadHistory()) || [];
+  const host = document.getElementById('history-list');
+  if (!records.length) { host.innerHTML = '<div class="empty">还没有下载记录</div>'; return; }
+  host.innerHTML = records.map((record) => `<div class="hline" data-path="${esc(record.localPath)}">
+    <div class="hname" title="${esc(record.name)}">${esc(record.name)}</div>
+    <div class="hmeta">${esc(record.time)} · ${esc(record.remote || '')} · ${record.size ? esc(fmtSize(record.size)) : '目录'}</div>
+    <div class="hpath" title="${esc(record.localPath)}">${esc(record.localPath)}</div>
+  </div>`).join('');
+  host.querySelectorAll('.hline').forEach((node) => {
+    node.oncontextmenu = (e) => {
+      e.preventDefault();
+      const path = node.dataset.path;
+      showMenu(e.clientX, e.clientY, [
+        { label: '打开所在文件夹', action: () => api().OpenDownloadFolder(path).catch((err) => notify('打开失败：' + err, true)) },
+        { label: '复制本地路径', action: () => { api().SetClipboard(path); notify('已复制：' + path); } },
+      ]);
+    };
+    node.ondblclick = () => api().OpenDownloadFolder(node.dataset.path).catch((err) => notify('打开失败：' + err, true));
+  });
+}
+
+async function clearHistory() {
+  if (!confirm('确定清空全部下载记录？正在下载的任务不受影响。')) return;
+  try {
+    await api().ClearDownloadHistory();
+    await api().ClearDownloadTasks();
+    await refreshTasks();
+    await renderHistory();
+    notify('已清空下载记录');
+  } catch (err) { notify('清空失败：' + err, true); }
 }
 
 async function toggleTheme() {
@@ -1057,6 +1570,8 @@ function openSettings() {
   document.getElementById('set-cache-age').value = s.vfsCacheMaxAge || '';
   document.getElementById('set-buffer').value = s.bufferSize || '';
   document.getElementById('set-transfers').value = s.maxConcurrentTransfers || 4;
+  document.getElementById('set-download-dir').value = s.downloadDirectory || '';
+  document.getElementById('set-drag-mode').value = s.dragMode || 'panes';
   document.getElementById('settings-dialog').showModal();
 }
 
@@ -1091,6 +1606,8 @@ async function saveSettings() {
     vfsCacheMaxAge: document.getElementById('set-cache-age').value.trim(),
     bufferSize: document.getElementById('set-buffer').value.trim(),
     maxConcurrentTransfers: parseInt(document.getElementById('set-transfers').value, 10) || 4,
+    downloadDirectory: document.getElementById('set-download-dir').value.trim(),
+    dragMode: document.getElementById('set-drag-mode').value,
   };
   try { await api().SaveSettings(next); state.settings = next; document.getElementById('settings-dialog').close(); await refresh(); setStatus('设置已保存'); }
   catch (err) { setStatus('保存设置失败：' + err, true); }

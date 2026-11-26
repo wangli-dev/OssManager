@@ -26,6 +26,16 @@ func runAutotest() {
 		return
 	}
 	logf("autotest connections=%d", len(connections))
+	for _, external := range mount.CachedExternal() {
+		logf("autotest external remote=%s drive=%s pid=%d present=%v", external.Remote, external.Drive, external.PID, mount.DrivePresent(external.Drive))
+	}
+	probe := NewApp()
+	probe.settings = settings
+	for _, drive := range probe.LocalDrives() {
+		if drive.Kind == "rclone" {
+			logf("autotest rclone drive %s label=%s", drive.Root, drive.Label)
+		}
+	}
 	if len(connections) == 0 {
 		return
 	}

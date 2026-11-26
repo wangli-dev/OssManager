@@ -19,7 +19,9 @@ import (
 	"OssManager/internal/clipboard"
 	"OssManager/internal/config"
 	"OssManager/internal/connjson"
+	"OssManager/internal/download"
 	"OssManager/internal/filemanager"
+	"OssManager/internal/local"
 	"OssManager/internal/mount"
 	"OssManager/internal/policy"
 	"OssManager/internal/rclonefs"
@@ -28,7 +30,7 @@ import (
 	"OssManager/internal/transfer"
 )
 
-const appVersion = "1.2.0"
+const appVersion = "1.3.0"
 
 func logf(format string, args ...interface{}) {
 	_ = os.MkdirAll(config.DataDir(), 0o755)
@@ -82,6 +84,14 @@ func (a *App) mountOptions(remote string) mount.Options {
 
 func (a *App) restoreMounts() {
 	time.Sleep(3 * time.Second)
+	// 先登记系统上已有的外部 rclone 挂载，避免前端看不到旧版本留下的盘符。
+	externalRemotes := map[string]bool{}
+	for _, entry := range mount.CachedExternal() {
+		externalRemotes[strings.ToLower(strings.TrimSuffix(entry.Remote, ":"))] = true
+		if mount.DrivePresent(entry.Drive) {
+			logf("external mount %s %s pid=%d", entry.Remote, entry.Drive, entry.PID)
+		}
+	}
 	seen := make(map[string]bool)
 	for _, record := range config.ReadMountRecords() {
 		// 带路径的记录（如 host:/）保持原样，仅连接名的记录补尾冒号；
@@ -94,10 +104,17 @@ func (a *App) restoreMounts() {
 			continue
 		}
 		seen[remote] = true
-		if _, err := os.Stat(record.Drive + `\`); err == nil {
+		// 该连接已由独立 rclone 进程挂载时不再重复挂载，并清掉本程序的旧记录。
+		if externalRemotes[strings.ToLower(strings.TrimSuffix(remote, ":"))] {
+			a.removeMountRecordByDrive(record.Drive)
 			continue
 		}
-		if err := a.mounter.Mount(a.ctx, a.settings.RcloneConfig, remote, record.Drive, a.mountOptions(remote)); err != nil {
+		if mount.DrivePresent(record.Drive) {
+			continue
+		}
+		options := a.mountOptions(remote)
+		options.VolumeName = record.VolumeName
+		if err := a.mounter.Mount(a.ctx, a.settings.RcloneConfig, remote, record.Drive, options); err != nil {
 			logf("restore mount %s %s err=%v", remote, record.Drive, err)
 		} else {
 			logf("restore mount %s %s ok", remote, record.Drive)
@@ -106,7 +123,7 @@ func (a *App) restoreMounts() {
 	runtime.EventsEmit(a.ctx, "mounts-changed")
 }
 
-func (a *App) addMountRecord(remote, drive string) {
+func (a *App) addMountRecord(remote, drive, volumeName string) {
 	remote = strings.TrimSuffix(remote, ":") + ":"
 	records := config.ReadMountRecords()
 	for _, record := range records {
@@ -114,14 +131,14 @@ func (a *App) addMountRecord(remote, drive string) {
 			return
 		}
 	}
-	records = append(records, config.MountRecord{Remote: remote, Drive: drive})
+	records = append(records, config.MountRecord{Remote: remote, Drive: drive, VolumeName: volumeName})
 	_ = config.WriteMountRecords(records)
 }
 
-func (a *App) removeMountRecord(remote string) {
+func (a *App) removeMountRecordByDrive(drive string) {
 	var kept []config.MountRecord
 	for _, record := range config.ReadMountRecords() {
-		if record.Remote != remote {
+		if !strings.EqualFold(record.Drive, drive) {
 			kept = append(kept, record)
 		}
 	}
@@ -200,18 +217,32 @@ func (a *App) Mount(remote, drive, volumeName string) error {
 	err := a.mounter.Mount(a.ctx, a.settings.RcloneConfig, remote, drive, options)
 	logf("Mount result err=%v", err)
 	if err == nil {
-		a.addMountRecord(remote, drive)
+		a.addMountRecord(remote, drive, volumeName)
+		mount.InvalidateExternal()
 		runtime.EventsEmit(a.ctx, "mounts-changed")
 	}
 	return err
 }
 
-// Unmount 卸载盘符。
+// Unmount 卸载盘符，本程序挂载失败时回退为结束外部 rclone 进程。
 func (a *App) Unmount(drive string) error {
 	logf("Unmount drive=%s", drive)
 	err := a.mounter.Unmount(drive)
-	logf("Unmount err=%v", err)
-	return err
+	if err != nil {
+		if externalErr := mount.StopExternal(drive); externalErr != nil {
+			logf("Unmount err=%v external=%v", err, externalErr)
+			return err
+		}
+		mount.InvalidateExternal()
+		mount.WaitDriveGone(drive, 10*time.Second)
+		a.removeMountRecordByDrive(drive)
+		runtime.EventsEmit(a.ctx, "mounts-changed")
+		return nil
+	}
+	a.removeMountRecordByDrive(drive)
+	mount.InvalidateExternal()
+	runtime.EventsEmit(a.ctx, "mounts-changed")
+	return nil
 }
 
 // UnmountByRemote 按连接名卸载其所有挂载，避免前端挂载表不同步。
@@ -226,34 +257,111 @@ func (a *App) UnmountByRemote(remoteName string) error {
 		if err := a.mounter.Unmount(drive); err != nil {
 			return err
 		}
+		a.removeMountRecordByDrive(drive)
+	}
+	if !found {
+		if entry, ok := mount.FindExternalByRemote(target); ok {
+			found = true
+			if err := mount.StopExternal(entry.Drive); err != nil {
+				return err
+			}
+			mount.WaitDriveGone(entry.Drive, 10*time.Second)
+			a.removeMountRecordByDrive(entry.Drive)
+		}
 	}
 	if !found {
 		return fmt.Errorf("%s 没有挂载", remoteName)
 	}
-	a.removeMountRecord(target)
+	mount.InvalidateExternal()
 	runtime.EventsEmit(a.ctx, "mounts-changed")
 	return nil
 }
 
-// ListMounts 返回盘符到 remote 的映射。
+// ListMounts 返回盘符到 remote 的映射，包含本程序挂载与外部 rclone 进程挂载。
 func (a *App) ListMounts() map[string]string {
 	mounts := a.mounter.List()
-	logf("ListMounts %v", mounts)
+	for _, entry := range mount.CachedExternal() {
+		if _, exists := mounts[entry.Drive]; exists {
+			continue
+		}
+		if mount.DrivePresent(entry.Drive) {
+			mounts[entry.Drive] = strings.TrimSuffix(entry.Remote, ":") + ":"
+		}
+	}
 	return mounts
 }
 
 // FreeDrives 返回当前未被占用的盘符，按 Z 到 D 的顺序。
 func (a *App) FreeDrives() []string {
-	logf("FreeDrives called")
 	result := []string{}
 	for c := 'Z'; c >= 'D'; c-- {
 		drive := string(c) + ":"
-		if _, err := os.Stat(drive + `\`); err != nil {
+		if !mount.DrivePresent(drive) {
 			result = append(result, drive)
 		}
 	}
-	logf("FreeDrives result=%v", result)
 	return result
+}
+
+// ListLocal 列出本地目录内容，用于双栏浏览。
+func (a *App) ListLocal(path string) ([]local.Entry, error) {
+	return local.List(path)
+}
+
+// LocalDrives 返回本地盘符与网络位置，rclone 挂载的盘符用连接名作为名称。
+func (a *App) LocalDrives() []local.Drive {
+	drives := local.Drives()
+	external := map[string]mount.External{}
+	for _, entry := range mount.CachedExternal() {
+		external[strings.ToUpper(entry.Drive)] = entry
+	}
+	for index := range drives {
+		key := strings.ToUpper(strings.TrimSuffix(drives[index].Root, `\`))
+		entry, ok := external[key]
+		if !ok {
+			continue
+		}
+		if entry.Volume != "" {
+			drives[index].Label = entry.Volume
+		} else {
+			drives[index].Label = strings.TrimSuffix(entry.Remote, ":")
+		}
+		drives[index].Kind = "rclone"
+	}
+	return drives
+}
+
+// MountNetworkLocation 连接局域网共享目录，凭据为空时使用当前登录身份。
+func (a *App) MountNetworkLocation(unc, user, password string) error {
+	logf("MountNetwork %s user=%s", unc, user)
+	return local.MountNetwork(unc, user, password)
+}
+
+// UnmountNetworkLocation 断开局域网共享连接。
+func (a *App) UnmountNetworkLocation(unc string) error {
+	return local.UnmountNetwork(unc)
+}
+
+// DownloadHistory 返回历史下载记录，最新的在前。
+func (a *App) DownloadHistory() []download.Record {
+	return download.Read()
+}
+
+// ClearDownloadHistory 清空历史下载记录。
+func (a *App) ClearDownloadHistory() error {
+	return download.Clear()
+}
+
+// OpenDownloadFolder 打开下载文件所在目录。
+func (a *App) OpenDownloadFolder(localPath string) error {
+	dir := localPath
+	if info, err := os.Stat(localPath); err == nil && !info.IsDir() {
+		dir = filepath.Dir(localPath)
+	}
+	if dir == "" {
+		dir = config.DataDir()
+	}
+	return filemanager.Open(dir, a.settings.FileManager)
 }
 
 // GetPolicy 读取桶策略。
@@ -302,9 +410,28 @@ func (a *App) TestConnection(name string) error {
 	return err
 }
 
-// Download 下载远程对象到本地目录。
+// Download 下载远程对象到本地目录，并登记实时进度。
 func (a *App) Download(remotePath, localDir string) (string, error) {
-	return transfer.Download(a.ctx, a.settings.RcloneConfig, remotePath, localDir)
+	local, err := transfer.DownloadWithProgress(a.ctx, a.settings.RcloneConfig, remotePath, localDir)
+	if err != nil {
+		return "", err
+	}
+	size := int64(0)
+	if info, statErr := os.Stat(local); statErr == nil {
+		size = info.Size()
+	}
+	download.Add(remotePath, local, size)
+	return local, nil
+}
+
+// DownloadTasks 返回正在下载与最近完成的下载任务。
+func (a *App) DownloadTasks() []transfer.Task {
+	return transfer.ListTasks()
+}
+
+// ClearDownloadTasks 清除已完成与失败的下载任务。
+func (a *App) ClearDownloadTasks() {
+	transfer.ClearFinishedTasks()
 }
 
 // DragOutFiles 把远程文件下载到缓存后发起系统拖拽：用户按住鼠标拖到资源管理器即落盘复制。
@@ -391,9 +518,14 @@ func (a *App) OpenFolder(path string) error {
 	return filemanager.Open(path, a.settings.FileManager)
 }
 
-// ExportConnections 导出连接 JSON；path 为空时返回文本。
-func (a *App) ExportConnections(path string, includeSecrets bool) (string, error) {
-	text, err := connjson.Export(a.settings.RcloneConfig, includeSecrets)
+// ExportConnections 导出连接 JSON；includeSettings 为真时同时导出程序设置。
+func (a *App) ExportConnections(path string, includeSecrets, includeSettings bool) (string, error) {
+	var settings *config.Settings
+	if includeSettings {
+		value := a.settings
+		settings = &value
+	}
+	text, err := connjson.Export(a.settings.RcloneConfig, includeSecrets, settings)
 	if err != nil {
 		return "", err
 	}
@@ -403,7 +535,6 @@ func (a *App) ExportConnections(path string, includeSecrets bool) (string, error
 	return text, os.WriteFile(path, []byte(text), 0o644)
 }
 
-// ImportConnections 从 JSON 导入连接。
 // ExportBundle 把设置、rclone 配置与挂载记录打包为 zip 配置包，用于换机迁移。
 func (a *App) ExportBundle(zipPath string) (string, error) {
 	entries := []bundle.Entry{
@@ -437,8 +568,14 @@ func (a *App) ImportBundle(zipPath string) (string, error) {
 	return "已导入：" + strings.Join(restored, "、"), nil
 }
 
-func (a *App) ImportConnections(path string) (string, error) {
-	return connjson.Import(a.settings.RcloneConfig, path)
+// ImportConnections 从 JSON 导入连接；applySettings 为真时同时恢复文件中的程序设置。
+func (a *App) ImportConnections(path string, applySettings bool) (string, error) {
+	message, err := connjson.Import(a.settings.RcloneConfig, path, applySettings)
+	if err == nil && applySettings {
+		a.settings = config.LoadSettings()
+		transfer.SetConcurrency(a.settings.MaxConcurrentTransfers)
+	}
+	return message, err
 }
 
 // PickFile 打开文件选择框。
@@ -651,13 +788,18 @@ func (a *App) DownloadBatch(remotePaths []string, localDir string) (string, erro
 		go func(target string) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			_, err := transfer.Download(a.ctx, a.settings.RcloneConfig, target, localDir)
+			local, err := transfer.DownloadWithProgress(a.ctx, a.settings.RcloneConfig, target, localDir)
 			mu.Lock()
 			if err != nil {
 				failed++
 				problems = append(problems, filepath.Base(target)+"："+err.Error())
 			} else {
 				success++
+				size := int64(0)
+				if info, statErr := os.Stat(local); statErr == nil {
+					size = info.Size()
+				}
+				download.Add(target, local, size)
 			}
 			mu.Unlock()
 		}(path)
@@ -672,7 +814,11 @@ func (a *App) DownloadBatch(remotePaths []string, localDir string) (string, erro
 
 // DownloadFolder 递归下载远程目录。
 func (a *App) DownloadFolder(remoteDir, localDir string) error {
-	return transfer.DownloadFolder(a.ctx, a.settings.RcloneConfig, remoteDir, localDir)
+	if err := transfer.DownloadFolder(a.ctx, a.settings.RcloneConfig, remoteDir, localDir); err != nil {
+		return err
+	}
+	download.Add(remoteDir, localDir, 0)
+	return nil
 }
 
 // CreateBucket 新建桶。

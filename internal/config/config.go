@@ -9,16 +9,18 @@ import (
 
 // Settings 是程序级设置；字段与 C# 版本保持兼容，便于从旧版本迁移。
 type Settings struct {
-	RcloneConfig         string   `json:"rcloneConfig"`
-	FileManager          string   `json:"fileManager"`
-	Theme                string   `json:"theme"`
-	CacheDirectory       string   `json:"cacheDirectory"`
-	DirCacheTime         string   `json:"dirCacheTime"`
-	VfsCacheMaxSize      string   `json:"vfsCacheMaxSize"`
-	VfsCacheMaxAge       string   `json:"vfsCacheMaxAge"`
-	BufferSize           string   `json:"bufferSize"`
-	MaxConcurrentTransfers int    `json:"maxConcurrentTransfers"`
-	ServerModtimeRemotes []string `json:"serverModtimeRemotes"`
+	RcloneConfig           string   `json:"rcloneConfig"`
+	FileManager            string   `json:"fileManager"`
+	Theme                  string   `json:"theme"`
+	CacheDirectory         string   `json:"cacheDirectory"`
+	DirCacheTime           string   `json:"dirCacheTime"`
+	VfsCacheMaxSize        string   `json:"vfsCacheMaxSize"`
+	VfsCacheMaxAge         string   `json:"vfsCacheMaxAge"`
+	BufferSize             string   `json:"bufferSize"`
+	MaxConcurrentTransfers int      `json:"maxConcurrentTransfers"`
+	DownloadDirectory      string   `json:"downloadDirectory"`
+	DragMode               string   `json:"dragMode"`
+	ServerModtimeRemotes   []string `json:"serverModtimeRemotes"`
 }
 
 // Connection 是 rclone.conf 中一个连接的公开信息，不含密钥。
@@ -95,6 +97,25 @@ func LoadSettings() Settings {
 	}
 	if value.MaxConcurrentTransfers <= 0 {
 		value.MaxConcurrentTransfers = 4
+	}
+	if strings.TrimSpace(value.DirCacheTime) == "" {
+		value.DirCacheTime = "12h"
+	}
+	if strings.TrimSpace(value.VfsCacheMaxSize) == "" {
+		value.VfsCacheMaxSize = "10G"
+	}
+	if strings.TrimSpace(value.VfsCacheMaxAge) == "" {
+		value.VfsCacheMaxAge = "24h"
+	}
+	if strings.TrimSpace(value.BufferSize) == "" {
+		value.BufferSize = "64M"
+	}
+	if value.DragMode != "shell" {
+		value.DragMode = "panes"
+	}
+	// 数据目录没有设置文件时立即落盘一份，保证配置文件固定与 exe 同目录。
+	if _, err := os.Stat(SettingsPath()); err != nil {
+		_ = SaveSettings(value)
 	}
 	return value
 }
@@ -236,8 +257,9 @@ func legacyFile(name string) string {
 
 // MountRecord 是一条开机恢复挂载记录。
 type MountRecord struct {
-	Remote string
-	Drive  string
+	Remote     string
+	Drive      string
+	VolumeName string
 }
 
 // MountRecordPath 返回挂载记录文件路径。
@@ -245,40 +267,86 @@ func MountRecordPath() string {
 	return filepath.Join(DataDir(), "mounts.txt")
 }
 
-// ReadMountRecords 读取挂载记录；新目录没有时回退读取旧用户目录，便于迁移。
+// mountRecordSources 返回挂载记录的读取顺序：新文件优先，其次旧版本留下的文件。
+func mountRecordSources() []string {
+	var result []string
+	result = append(result, MountRecordPath(), filepath.Join(DataDir(), "rclone-mounts.txt"))
+	for _, name := range []string{"mounts.txt", "rclone-mounts.txt"} {
+		if legacy := legacyFile(name); legacy != "" {
+			result = append(result, legacy)
+		}
+	}
+	return result
+}
+
+// ReadMountRecords 按 remote 合并读取挂载记录，兼容旧版两段与三段格式。
 func ReadMountRecords() []MountRecord {
-	path := MountRecordPath()
-	if _, err := os.Stat(path); err != nil {
-		if legacy := legacyFile("mounts.txt"); legacy != "" {
-			path = legacy
-		}
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil
-	}
 	var records []MountRecord
-	for _, line := range strings.Split(string(data), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
+	seen := map[string]bool{}
+	for _, path := range mountRecordSources() {
+		data, err := os.ReadFile(path)
+		if err != nil {
 			continue
 		}
-		parts := strings.SplitN(line, "|", 2)
-		if len(parts) != 2 {
-			continue
+		for _, line := range strings.Split(string(data), "\n") {
+			line = strings.TrimSpace(strings.TrimSuffix(line, "\r"))
+			if line == "" {
+				continue
+			}
+			parts := strings.Split(line, "|")
+			if len(parts) < 2 {
+				continue
+			}
+			name := strings.TrimSuffix(strings.TrimSpace(parts[0]), ":")
+			drive := strings.TrimSpace(parts[1])
+			if name == "" || !isDriveLetter(drive) {
+				continue
+			}
+			key := strings.ToLower(name)
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			volume := name
+			if len(parts) >= 3 && strings.TrimSpace(parts[2]) != "" {
+				volume = strings.TrimSpace(parts[2])
+			}
+			records = append(records, MountRecord{Remote: name + ":", Drive: strings.ToUpper(drive), VolumeName: volume})
 		}
-		records = append(records, MountRecord{Remote: parts[0], Drive: parts[1]})
 	}
 	return records
 }
 
-// WriteMountRecords 保存挂载记录。
+// isDriveLetter 判断形如 D: 的盘符。
+func isDriveLetter(value string) bool {
+	if len(value) != 2 || value[1] != ':' {
+		return false
+	}
+	c := value[0]
+	return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
+}
+
+// WriteMountRecords 保存挂载记录，统一写三段格式以保留挂载名称。
 func WriteMountRecords(records []MountRecord) error {
 	var builder strings.Builder
 	for _, record := range records {
-		builder.WriteString(record.Remote + "|" + record.Drive + "\n")
+		volume := record.VolumeName
+		if volume == "" {
+			volume = strings.TrimSuffix(record.Remote, ":")
+		}
+		builder.WriteString(record.Remote + "|" + record.Drive + "|" + volume + "\n")
 	}
-	return os.WriteFile(MountRecordPath(), []byte(builder.String()), 0o644)
+	if err := os.WriteFile(MountRecordPath(), []byte(builder.String()), 0o644); err != nil {
+		return err
+	}
+	// 新文件写入成功后移除旧版本记录，避免删除后又被旧文件读回来。
+	_ = os.Remove(filepath.Join(DataDir(), "rclone-mounts.txt"))
+	for _, name := range []string{"OssManager", "RcloneOssManager"} {
+		if dir := os.Getenv("LOCALAPPDATA"); dir != "" {
+			_ = os.Remove(filepath.Join(dir, name, "rclone-mounts.txt"))
+		}
+	}
+	return nil
 }
 
 // OrderPath 返回连接排序文件路径。

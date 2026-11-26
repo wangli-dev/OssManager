@@ -10,3 +10,6 @@
 .idea/
 .vscode/
 *.user
+
+# Wails 前端校验文件
+/frontend/package.json.md5
