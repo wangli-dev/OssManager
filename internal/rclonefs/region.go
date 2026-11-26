@@ -51,6 +51,24 @@ func NewFs(ctx context.Context, confPath, remotePath string) (fs.Fs, error) {
 	return fs.NewFs(ctx, remotePath)
 }
 
+// RemoteName 返回 remotePath 的连接名部分（冒号前）。
+func RemoteName(remotePath string) string {
+	name, _ := splitRemotePath(remotePath)
+	return name
+}
+
+// BucketListRoot 判断目标是否是 S3 的「桶列表根」：只写连接名、路径为空，
+// 且连接类型是 s3（配置里也没有内置桶名）。S3 的根是桶列表，不能直接放对象，
+// 直接上传会报 Key must not be empty 这类隐晦错误，应提前拦住。
+func BucketListRoot(confPath, remotePath string) bool {
+	name, rest := splitRemotePath(remotePath)
+	if name == "" || strings.Trim(rest, "/") != "" {
+		return false
+	}
+	opts := ossconfig.RemoteOptions(confPath, name)
+	return strings.EqualFold(strings.TrimSpace(opts["type"]), "s3") && strings.TrimSpace(opts["bucket"]) == ""
+}
+
 // splitRemotePath 拆出 "remote:path" 的远程名与路径。
 func splitRemotePath(remotePath string) (string, string) {
 	index := strings.Index(remotePath, ":")

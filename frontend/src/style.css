@@ -197,6 +197,8 @@ section.files {
   margin: 10px;
   border: 1px solid var(--border);
   border-radius: 8px;
+  /* Wails 拖入文件只在这个面板内生效：OnFileDrop 默认要求落点元素带 --wails-drop-target: drop（属性会继承到行/单元格）。 */
+  --wails-drop-target: drop;
 }
 
 .crumbs {
@@ -511,6 +513,12 @@ section.local .pane-head button { padding: 4px 9px; white-space: nowrap; flex: 0
 .lrow .lsize { color: var(--muted); font-size: 12px; white-space: nowrap; }
 
 #local-entries.drop-target, #entries.drop-target {
+  outline: 2px dashed var(--accent);
+  outline-offset: -4px;
+}
+
+/* Wails 外部文件拖到面板时的落点高亮（wails-drop-target-active 由 runtime 添加）。 */
+section.files .wails-drop-target-active {
   outline: 2px dashed var(--accent);
   outline-offset: -4px;
 }

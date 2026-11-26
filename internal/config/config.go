@@ -121,8 +121,9 @@ func LoadSettings() Settings {
 	if strings.TrimSpace(value.BufferSize) == "" {
 		value.BufferSize = "64M"
 	}
-	if value.DragMode != "shell" {
-		value.DragMode = "panes"
+	// 默认拖到资源管理器复制落盘；显式选「拖到本地栏」时才用页内传输。
+	if value.DragMode != "panes" {
+		value.DragMode = "shell"
 	}
 	if value.AutoSizeDelay < 0 {
 		value.AutoSizeDelay = 0

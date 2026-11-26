@@ -2,6 +2,7 @@ package transfer
 
 import (
 	"context"
+	"fmt"
 	iofs "io/fs"
 	"os"
 	"path/filepath"
@@ -93,12 +94,16 @@ func DownloadFolder(ctx context.Context, confPath, remoteDir, localDir string) e
 }
 
 // splitRemote 把 remote:bucket/dir/file 拆成父目录和文件名。
+// 根目录下的对象形如 remote:file，没有斜杠，需要按连接名后的冒号切分。
 func splitRemote(remotePath string) (string, string) {
-	index := strings.LastIndex(remotePath, "/")
-	if index < 0 {
+	if index := strings.LastIndex(remotePath, "/"); index >= 0 {
+		return remotePath[:index], remotePath[index+1:]
+	}
+	colon := strings.Index(remotePath, ":")
+	if colon < 0 || colon == len(remotePath)-1 {
 		return remotePath, ""
 	}
-	return remotePath[:index], remotePath[index+1:]
+	return remotePath[:colon+1], remotePath[colon+1:]
 }
 
 // CopyRemote 把远程对象复制到另一个远程目录，支持跨连接复制。
@@ -163,6 +168,9 @@ func Upload(ctx context.Context, confPath, localPath, remoteDir string) error {
 	if err := ensureConfig(confPath); err != nil {
 		return err
 	}
+	if rclonefs.BucketListRoot(confPath, remoteDir) {
+		return fmt.Errorf("S3 连接 %s 的根目录是桶列表，不能直接上传文件，请先进入某个桶再上传", rclonefs.RemoteName(remoteDir))
+	}
 	srcFs, err := fs.NewFs(ctx, filepath.Dir(localPath))
 	if err != nil {
 		return err
@@ -179,11 +187,21 @@ func Upload(ctx context.Context, confPath, localPath, remoteDir string) error {
 	return err
 }
 
-// UploadFolder 递归上传本地目录，保留相对目录结构。
+// FolderTarget 返回上传目录时在 remoteRoot 下使用的目标目录：保留目录本身的名字，
+// 避免把目录里的内容平铺到目标目录。
+func FolderTarget(remoteRoot, localDir string) string {
+	return strings.TrimSuffix(remoteRoot, "/") + "/" + filepath.Base(filepath.Clean(localDir))
+}
+
+// UploadFolder 递归上传本地目录，在 remoteRoot 下建同名目录并保留相对结构。
 func UploadFolder(ctx context.Context, confPath, localDir, remoteRoot string) error {
 	if err := ensureConfig(confPath); err != nil {
 		return err
 	}
+	if rclonefs.BucketListRoot(confPath, remoteRoot) {
+		return fmt.Errorf("S3 连接 %s 的根目录是桶列表，不能直接上传文件夹，请先进入某个桶再上传", rclonefs.RemoteName(remoteRoot))
+	}
+	root := FolderTarget(remoteRoot, localDir)
 	return filepath.WalkDir(localDir, func(path string, entry iofs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -196,9 +214,9 @@ func UploadFolder(ctx context.Context, confPath, localDir, remoteRoot string) er
 			return relErr
 		}
 		sub := filepath.ToSlash(filepath.Dir(relative))
-		target := remoteRoot
+		target := root
 		if sub != "." && sub != "" {
-			target = strings.TrimSuffix(remoteRoot, "/") + "/" + sub
+			target = strings.TrimSuffix(root, "/") + "/" + sub
 		}
 		return Upload(ctx, confPath, path, target)
 	})

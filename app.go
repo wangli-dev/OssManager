@@ -621,14 +621,20 @@ func (a *App) Upload(remoteDir, localFile string) error {
 
 // UploadPath 自动判断文件或目录后上传。
 func (a *App) UploadPath(remoteDir, localPath string) error {
+	logf("UploadPath remoteDir=%q local=%q", remoteDir, localPath)
 	info, err := os.Stat(localPath)
 	if err != nil {
+		logf("UploadPath stat %q err=%v", localPath, err)
 		return err
 	}
 	if info.IsDir() {
-		return transfer.UploadFolder(a.ctx, a.settings.RcloneConfig, localPath, remoteDir)
+		err = transfer.UploadFolder(a.ctx, a.settings.RcloneConfig, localPath, remoteDir)
+		logf("UploadPath folder %q -> %q err=%v", localPath, remoteDir, err)
+		return err
 	}
-	return transfer.Upload(a.ctx, a.settings.RcloneConfig, localPath, remoteDir)
+	err = transfer.Upload(a.ctx, a.settings.RcloneConfig, localPath, remoteDir)
+	logf("UploadPath file %q -> %q err=%v", localPath, remoteDir, err)
+	return err
 }
 
 // OpenFolder 用文件管理器打开目录。

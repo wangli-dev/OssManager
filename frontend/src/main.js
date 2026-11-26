@@ -2211,13 +2211,18 @@ async function uploadPaths(paths) {
   const target = await chooseUploadTarget();
   if (!target) return;
   const remoteDir = target.name + ':' + target.path;
-  let ok = 0, fail = 0;
+  let ok = 0, fail = 0, firstError = '';
   for (const path of paths) {
     try { await api().UploadPath(remoteDir, path); ok++; }
-    catch (err) { fail++; }
+    catch (err) {
+      fail++;
+      // 保留第一条错误，避免失败原因被吞掉只能看到「失败 N」。
+      if (!firstError) firstError = String(err);
+    }
   }
   await afterUpload(target);
-  notify(`上传到 ${target.label} 完成：成功 ${ok}，失败 ${fail}`, fail > 0);
+  const detail = fail > 0 && firstError ? '：' + firstError : '';
+  notify(`上传到 ${target.label} 完成：成功 ${ok}，失败 ${fail}${detail}`, fail > 0);
 }
 
 async function uploadFile() {
@@ -2598,7 +2603,7 @@ function openSettings() {
   document.getElementById('set-autosize-delay').value = s.autoSizeDelay ?? 5;
   document.getElementById('set-autosize-interval').value = s.autoSizeInterval ?? 2;
   document.getElementById('set-download-dir').value = s.downloadDirectory || '';
-  document.getElementById('set-drag-mode').value = s.dragMode || 'panes';
+  document.getElementById('set-drag-mode').value = s.dragMode || 'shell';
   document.getElementById('settings-dialog').showModal();
 }
 
