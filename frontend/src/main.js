@@ -468,15 +468,27 @@ function showBrowseError(remote, err) {
   document.getElementById('be-retry').onclick = loadEntries;
 }
 
+let browseSeq = 0;
+
 async function loadEntries() {
   if (!state.active) { renderEntries(); return; }
-  const remote = state.active + ':' + state.path;
+  // 竞态防护：快速切换连接时，慢连接的迟到响应不得污染当前连接的视图。
+  const seq = ++browseSeq;
+  const reqName = state.active;
+  const remote = reqName + ':' + state.path;
   setStatus('正在读取 ' + remote + ' …');
   try {
-    state.entries = (await api().List(remote)) || [];
+    const entries = (await api().List(remote)) || [];
+    if (seq !== browseSeq || state.active !== reqName) return;
+    state.entries = entries;
     renderEntries();
     updateFooter();
   } catch (err) {
+    if (seq !== browseSeq || state.active !== reqName) {
+      // 过期错误不打扰当前连接；仅以 toast 轻提示来源。
+      toast(reqName + ' 读取失败：' + (describeError(err) || err), true);
+      return;
+    }
     // 失败不再渲染空表（看起来像正常），改为列表区显示错误卡片并给出分类提示。
     state.entries = [];
     renderEntries();
