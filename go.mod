@@ -14,8 +14,10 @@ require (
 
 require (
 	git.sr.ht/~jackmordaunt/go-toast/v2 v2.0.3 // indirect
+	github.com/Azure/go-ntlmssp v0.1.1 // indirect
 	github.com/IBM/go-sdk-core/v5 v5.25.1 // indirect
 	github.com/Max-Sum/base32768 v0.0.0-20230304063302-18e6ce5945fd // indirect
+	github.com/Microsoft/go-winio v0.6.2 // indirect
 	github.com/aalpar/deheap v1.1.2 // indirect
 	github.com/adrg/xdg v0.5.3 // indirect
 	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.7.27 // indirect
@@ -62,9 +64,11 @@ require (
 	github.com/hashicorp/go-retryablehttp v0.7.8 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/jchv/go-winloader v0.0.0-20210711035445-715c2860da7e // indirect
+	github.com/jlaffaye/ftp v0.2.4 // indirect
 	github.com/jtolds/gls v4.20.0+incompatible // indirect
 	github.com/jzelinskie/whirlpool v0.0.0-20201016144138-0675e54bb004 // indirect
 	github.com/klauspost/cpuid/v2 v2.4.0 // indirect
+	github.com/kr/fs v0.1.0 // indirect
 	github.com/labstack/echo/v4 v4.16.1 // indirect
 	github.com/labstack/gommon v0.5.0 // indirect
 	github.com/lanrat/extsort v1.5.0 // indirect
@@ -86,6 +90,7 @@ require (
 	github.com/peterh/liner v1.2.3 // indirect
 	github.com/pkg/browser v0.0.0-20240102092130-5ac0b6a4141c // indirect
 	github.com/pkg/errors v0.9.1 // indirect
+	github.com/pkg/sftp v1.13.11 // indirect
 	github.com/pkg/xattr v0.4.12 // indirect
 	github.com/power-devops/perfstat v0.0.0-20260805114148-88456608a4f6 // indirect
 	github.com/prometheus/client_golang v1.25.0 // indirect
@@ -108,6 +113,7 @@ require (
 	github.com/valyala/fasttemplate v1.2.2 // indirect
 	github.com/wailsapp/go-webview2 v1.0.22 // indirect
 	github.com/wk8/go-ordered-map/v2 v2.1.8 // indirect
+	github.com/xanzy/ssh-agent v0.3.3 // indirect
 	github.com/youmark/pkcs8 v0.0.0-20240726163527-a2c0da244d78 // indirect
 	github.com/yusufpapurcu/wmi v1.2.4 // indirect
 	github.com/zeebo/blake3 v0.2.4 // indirect
