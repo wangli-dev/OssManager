@@ -77,10 +77,17 @@ function openTab(name) {
   state.active = name;
   state.selected = null;
   state.multi.clear();
-  restoreActiveTab();
+  const c = cacheOf(name);
+  if (!c.loaded && !c.error) {
+    // 首次打开：先显示加载中占位，不渲染空的「此位置没有对象」。
+    state.path = c.path;
+    state.entries = [];
+    showBrowseLoading(name + ':' + (c.path || '/'));
+  } else {
+    restoreActiveTab();
+  }
   renderConnections();
   renderTabs();
-  const c = cacheOf(name);
   if (c.loaded) updateFooter();
   else loadEntries();
 }
@@ -546,6 +553,17 @@ function renderConnections() {
 
 async function selectConnection(name) {
   openTab(name);
+}
+
+// 首次打开标签时在列表区显示加载中占位，避免误显示「此位置没有对象」。
+function showBrowseLoading(remote) {
+  const host = document.getElementById('entries');
+  if (!host) return;
+  host.innerHTML = `
+    <div class="browse-loading">
+      <div class="spinner"></div>
+      <div>正在加载 ${esc(remote)} …</div>
+    </div>`;
 }
 
 // 在文件列表区渲染错误卡片：友好分类 + 原始错误 + 重试按钮。
