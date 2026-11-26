@@ -84,7 +84,12 @@ func (a *App) restoreMounts() {
 	time.Sleep(3 * time.Second)
 	seen := make(map[string]bool)
 	for _, record := range config.ReadMountRecords() {
-		remote := strings.TrimSuffix(record.Remote, ":") + ":"
+		// 带路径的记录（如 host:/）保持原样，仅连接名的记录补尾冒号；
+		// 支持把远程某个子目录（含根目录 /）恢复挂载。
+		remote := record.Remote
+		if !strings.HasSuffix(remote, "/") {
+			remote = strings.TrimSuffix(remote, ":") + ":"
+		}
 		if seen[remote] {
 			continue
 		}
