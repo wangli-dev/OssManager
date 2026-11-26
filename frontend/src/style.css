@@ -259,3 +259,23 @@ body.dark ::-webkit-scrollbar-thumb:hover { background: #5c5c66; }
 .policy-right { flex: 1; }
 .policy-actions { display: flex; flex-wrap: wrap; gap: 6px 12px; }
 .policy-actions label.chk { display: inline-flex; align-items: center; gap: 4px; width: auto; margin: 0; font-size: 12px; }
+
+/* 浏览失败错误卡片：替代静默空表，明确告知原因 */
+.browse-error {
+  margin: 48px auto;
+  max-width: 560px;
+  padding: 20px 24px;
+  border: 1px solid var(--danger);
+  border-left-width: 4px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--danger) 8%, transparent);
+}
+.browse-error .be-title { font-size: 15px; font-weight: 600; margin-bottom: 8px; }
+.browse-error .be-hint { font-size: 13px; margin-bottom: 8px; }
+.browse-error .be-detail {
+  font-size: 12px;
+  opacity: 0.75;
+  word-break: break-all;
+  margin-bottom: 14px;
+  font-family: Consolas, monospace;
+}

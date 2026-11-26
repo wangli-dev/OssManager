@@ -21,6 +21,18 @@ let statusEl;
 let menuEl;
 
 const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+// 把 rclone/底层错误翻译成人话；匹配不到时返回空串，由界面显示原始错误。
+function describeError(raw) {
+  const low = String(raw || '').toLowerCase();
+  if (/unable to authenticate|permission denied \(publickey|auth fail|ssh: auth|wrong password|bad password/.test(low)) return '认证失败：账号、密码或密钥不正确（SFTP 密钥登录请检查 key_file 路径与格式）';
+  if (/dial tcp|connection refused|i\/o timeout|connectex|no route|unreachable|lookup /.test(low)) return '无法连接主机：请检查地址、端口与网络可达性';
+  if (/key_file|private key|open .*key|load .*key/.test(low)) return '密钥读取失败：检查密钥文件路径、格式或口令';
+  if (/directory not found|no such object|does not exist|isn't a directory|file does not exist/.test(low)) return '路径不存在：远程目录可能已被删除或从未存在';
+  if (/couldn't find backend|unknown backend/.test(low)) return '该连接类型未被支持';
+  if (/access denied|forbidden|permission denied/.test(low)) return '无访问权限：账号对该目录受限';
+  return '';
+}
 const fmtSize = (n) => {
   if (n == null || n < 0) return '';
   const u = ['B', 'KB', 'MB', 'GB', 'TB']; let v = n, i = 0;
@@ -356,6 +368,21 @@ async function selectConnection(name) {
   renderConnections(); await loadEntries();
 }
 
+// 在文件列表区渲染错误卡片：友好分类 + 原始错误 + 重试按钮。
+function showBrowseError(remote, err) {
+  const host = document.getElementById('entries');
+  if (!host) return;
+  const hint = describeError(err);
+  host.innerHTML = `
+    <div class="browse-error">
+      <div class="be-title">读取 ${esc(remote)} 失败</div>
+      ${hint ? `<div class="be-hint">${esc(hint)}</div>` : ''}
+      <div class="be-detail">${esc(String(err))}</div>
+      <button class="primary" id="be-retry">重试</button>
+    </div>`;
+  document.getElementById('be-retry').onclick = loadEntries;
+}
+
 async function loadEntries() {
   if (!state.active) { renderEntries(); return; }
   const remote = state.active + ':' + state.path;
@@ -364,7 +391,14 @@ async function loadEntries() {
     state.entries = (await api().List(remote)) || [];
     renderEntries();
     setStatus(remote + '，' + state.entries.length + ' 项');
-  } catch (err) { state.entries = []; renderEntries(); setStatus('读取失败：' + err, true); }
+  } catch (err) {
+    // 失败不再渲染空表（看起来像正常），改为列表区显示错误卡片并给出分类提示。
+    state.entries = [];
+    renderEntries();
+    showBrowseError(remote, err);
+    const hint = describeError(err);
+    setStatus(hint || ('读取失败：' + err), true);
+  }
 }
 
 function renderEntries() {
