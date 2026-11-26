@@ -358,6 +358,49 @@ func ReadMountRecords() []MountRecord {
 	return records
 }
 
+// RemoveMountRecords 删除指定连接（含其所有路径）的挂载记录，返回是否发生改动。
+func RemoveMountRecords(name string) bool {
+	target := strings.ToLower(RemoteName(NormalizeRemote(name)))
+	records := ReadMountRecords()
+	kept := make([]MountRecord, 0, len(records))
+	for _, record := range records {
+		if strings.ToLower(RemoteName(record.Remote)) == target {
+			continue
+		}
+		kept = append(kept, record)
+	}
+	if len(kept) == len(records) {
+		return false
+	}
+	_ = WriteMountRecords(kept)
+	return true
+}
+
+// RenameMountRecords 把记录里的连接名改成新名，保留路径与卷标，返回是否发生改动。
+func RenameMountRecords(oldName, newName string) bool {
+	oldTarget := strings.ToLower(RemoteName(NormalizeRemote(oldName)))
+	nextName := RemoteName(NormalizeRemote(newName))
+	if oldTarget == "" || nextName == "" {
+		return false
+	}
+	records := ReadMountRecords()
+	changed := false
+	for index := range records {
+		current := records[index].Remote
+		colon := strings.Index(current, ":")
+		if colon < 0 || strings.ToLower(current[:colon]) != oldTarget {
+			continue
+		}
+		// 冒号后的部分（空或 /path）保持不变。
+		records[index].Remote = nextName + current[colon:]
+		changed = true
+	}
+	if changed {
+		_ = WriteMountRecords(records)
+	}
+	return changed
+}
+
 // isDriveLetter 判断形如 D: 的盘符。
 func isDriveLetter(value string) bool {
 	if len(value) != 2 || value[1] != ':' {
@@ -372,11 +415,12 @@ func WriteMountRecords(records []MountRecord) error {
 	var builder strings.Builder
 	for _, record := range records {
 		volume := record.VolumeName
-		if volume == "" {
-			// 路径型 remote 用连接名兜底，避免写出 host:/ 这样的卷标。
-			volume = RemoteName(record.Remote)
+		line := record.Remote + "|" + record.Drive
+		// 卷标留空时只写两段，保持“未指定”语义，让恢复时能重新按显示名取名。
+		if volume != "" {
+			line += "|" + volume
 		}
-		builder.WriteString(record.Remote + "|" + record.Drive + "|" + volume + "\n")
+		builder.WriteString(line + "\n")
 	}
 	if err := os.WriteFile(MountRecordPath(), []byte(builder.String()), 0o644); err != nil {
 		return err

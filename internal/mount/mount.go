@@ -134,6 +134,22 @@ func (m *Manager) Unmount(drive string) error {
 	return fmt.Errorf("卸载超时，请手动检查 %s", drive)
 }
 
+// RenameRemote 更新挂载表中 remote 的连接名，改名后仍能按新名字卸载。
+func (m *Manager) RenameRemote(oldName, newName string) {
+	target := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(oldName), ":"))
+	newName = strings.TrimSuffix(strings.TrimSpace(newName), ":")
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, entry := range m.mounts {
+		colon := strings.Index(entry.remote, ":")
+		if colon < 0 || strings.ToLower(entry.remote[:colon]) != target {
+			continue
+		}
+		// 冒号后的路径部分保持不变。
+		entry.remote = newName + entry.remote[colon:]
+	}
+}
+
 // List 返回盘符到 remote 的映射。
 func (m *Manager) List() map[string]string {
 	m.mu.Lock()

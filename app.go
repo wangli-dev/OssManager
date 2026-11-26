@@ -450,14 +450,35 @@ func (a *App) SaveConnection(def remote.Definition, exists bool) error {
 	return err
 }
 
-// DeleteConnection 删除连接。
+// DeleteConnection 删除连接，并卸载其挂载、清理开机恢复记录。
+// 只删配置不卸载会让盘符残留，访问时卡住，且下次启动继续尝试恢复已不存在的连接。
 func (a *App) DeleteConnection(name string) error {
-	return remote.Delete(a.settings.RcloneConfig, name)
+	// 没挂载时 UnmountByRemote 会报「没有挂载」，不能因此阻止删除。
+	if err := a.UnmountByRemote(name); err != nil {
+		logf("DeleteConnection unmount %s err=%v", name, err)
+	}
+	if err := remote.Delete(a.settings.RcloneConfig, name); err != nil {
+		return err
+	}
+	// 兼底清理残留记录（存在记录但当前未挂载的情况）。
+	if config.RemoveMountRecords(name) {
+		mount.InvalidateExternal()
+		runtime.EventsEmit(a.ctx, "mounts-changed")
+	}
+	return nil
 }
 
 // RenameConnection 修改内部连接名。
 func (a *App) RenameConnection(oldName, newName string) error {
-	return remote.Rename(a.settings.RcloneConfig, oldName, newName)
+	if err := remote.Rename(a.settings.RcloneConfig, oldName, newName); err != nil {
+		return err
+	}
+	// 挂载表与开机恢复记录也要换成新名字，否则改名后无法按新名卸载、重启也恢复不了。
+	a.mounter.RenameRemote(oldName, newName)
+	if config.RenameMountRecords(oldName, newName) {
+		runtime.EventsEmit(a.ctx, "mounts-changed")
+	}
+	return nil
 }
 
 // TestConnection 通过列根目录验证连接可用。
