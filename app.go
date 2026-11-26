@@ -72,7 +72,8 @@ func (a *App) startup(ctx context.Context) {
 func (a *App) mountOptions(remote string) mount.Options {
 	// ServerModtimeRemotes 中的连接使用服务器修改时间，避免浏览目录时逐个请求对象元数据。
 	useServerModtime := false
-	name := strings.TrimSuffix(remote, ":")
+	// 连接名取冒号前部分，路径型 remote（host:/）也要能匹配设置里的名单。
+	name := config.RemoteName(remote)
 	for _, item := range a.settings.ServerModtimeRemotes {
 		if strings.EqualFold(strings.TrimSpace(item), name) {
 			useServerModtime = true
@@ -100,19 +101,20 @@ func (a *App) restoreMounts() {
 		}
 	}
 	seen := make(map[string]bool)
+	// 挂载记录里没写卷标时用连接显示名（conf 的 description），避免卷标露出 oss_xxx 这类内部 ID。
+	displayNames := a.connectionDisplayNames()
 	for _, record := range config.ReadMountRecords() {
-		// 带路径的记录（如 host:/）保持原样，仅连接名的记录补尾冒号；
-		// 支持把远程某个子目录（含根目录 /）恢复挂载。
-		remote := record.Remote
-		if !strings.HasSuffix(remote, "/") {
-			remote = strings.TrimSuffix(remote, ":") + ":"
+		// 记录已带完整 remote（连接名: 或 连接名:/路径），直接使用，不再二次补冒号。
+		remote := config.NormalizeRemote(record.Remote)
+		if remote == "" {
+			continue
 		}
 		if seen[remote] {
 			continue
 		}
 		seen[remote] = true
 		// 该连接已由独立 rclone 进程挂载时不再重复挂载，并清掉本程序的旧记录。
-		if externalRemotes[strings.ToLower(strings.TrimSuffix(remote, ":"))] {
+		if externalRemotes[strings.ToLower(config.RemoteName(remote))] {
 			a.removeMountRecordByDrive(record.Drive)
 			continue
 		}
@@ -121,6 +123,9 @@ func (a *App) restoreMounts() {
 		}
 		options := a.mountOptions(remote)
 		options.VolumeName = record.VolumeName
+		if options.VolumeName == "" {
+			options.VolumeName = a.volumeLabel(remote, displayNames)
+		}
 		if err := a.mounter.Mount(a.ctx, a.settings.RcloneConfig, remote, record.Drive, options); err != nil {
 			logf("restore mount %s %s err=%v", remote, record.Drive, err)
 		} else {
@@ -138,15 +143,43 @@ func (a *App) restoreMounts() {
 }
 
 func (a *App) addMountRecord(remote, drive, volumeName string) {
-	remote = strings.TrimSuffix(remote, ":") + ":"
+	remote = config.NormalizeRemote(remote)
+	if volumeName == "" {
+		volumeName = a.volumeLabel(remote, a.connectionDisplayNames())
+	}
 	records := config.ReadMountRecords()
 	for _, record := range records {
-		if strings.EqualFold(record.Drive, drive) && strings.TrimSuffix(record.Remote, ":")+":" == remote {
+		if strings.EqualFold(record.Drive, drive) && config.NormalizeRemote(record.Remote) == remote {
 			return
 		}
 	}
 	records = append(records, config.MountRecord{Remote: remote, Drive: drive, VolumeName: volumeName})
 	_ = config.WriteMountRecords(records)
+}
+
+// volumeLabel 返回挂载卷标：连接显示名（conf 的 description）优先，其次连接名；
+// 不会带出 host:/ 这类路径，也不会露出 oss_xxx 之外的内部拼接串。
+func (a *App) volumeLabel(remote string, displayNames map[string]string) string {
+	name := config.RemoteName(remote)
+	if label := displayNames[strings.ToLower(name)]; label != "" {
+		return label
+	}
+	return name
+}
+
+// connectionDisplayNames 返回小写连接名到显示名（conf 的 description）的映射。
+func (a *App) connectionDisplayNames() map[string]string {
+	result := map[string]string{}
+	connections, err := config.ListConnections(a.settings.RcloneConfig)
+	if err != nil {
+		return result
+	}
+	for _, item := range connections {
+		if item.DisplayName != "" && item.DisplayName != item.Name {
+			result[strings.ToLower(item.Name)] = item.DisplayName
+		}
+	}
+	return result
 }
 
 func (a *App) removeMountRecordByDrive(drive string) {
@@ -224,10 +257,14 @@ func (a *App) List(remote string) ([]rclonefs.Entry, error) {
 
 // Mount 把连接挂载到盘符，volumeName 为空时使用连接显示名。
 func (a *App) Mount(remote, drive, volumeName string) error {
-	remote = strings.TrimSuffix(remote, ":") + ":"
+	remote = config.NormalizeRemote(remote)
 	logf("Mount remote=%s drive=%s volume=%s", remote, drive, volumeName)
 	options := a.mountOptions(remote)
 	options.VolumeName = volumeName
+	if options.VolumeName == "" {
+		// 前端未填卷标时用连接显示名，避免卷标显示内部连接 ID。
+		options.VolumeName = a.volumeLabel(remote, a.connectionDisplayNames())
+	}
 	err := a.mounter.Mount(a.ctx, a.settings.RcloneConfig, remote, drive, options)
 	logf("Mount result err=%v", err)
 	if err == nil {
@@ -261,10 +298,10 @@ func (a *App) Unmount(drive string) error {
 
 // UnmountByRemote 按连接名卸载其所有挂载，避免前端挂载表不同步。
 func (a *App) UnmountByRemote(remoteName string) error {
-	target := strings.TrimSuffix(remoteName, ":") + ":"
+	target := config.RemoteName(config.NormalizeRemote(remoteName))
 	found := false
 	for drive, remote := range a.mounter.List() {
-		if strings.TrimSuffix(remote, ":")+":" != target {
+		if !strings.EqualFold(config.RemoteName(remote), target) {
 			continue
 		}
 		found = true

@@ -295,6 +295,28 @@ func mountRecordSources() []string {
 	return result
 }
 
+// NormalizeRemote 规范化 remote 写法：只写连接名时补尾冒号，带路径的（host:/path）保持原样。
+// 早期实现无条件拼冒号，把 host:/ 变成 host:/:，导致挂载到不存在的路径。
+func NormalizeRemote(remote string) string {
+	remote = strings.TrimSpace(remote)
+	if remote == "" {
+		return ""
+	}
+	if !strings.Contains(remote, ":") {
+		return remote + ":"
+	}
+	return remote
+}
+
+// RemoteName 返回 remote 的连接名部分（冒号之前）。
+func RemoteName(remote string) string {
+	remote = strings.TrimSpace(remote)
+	if index := strings.Index(remote, ":"); index >= 0 {
+		return remote[:index]
+	}
+	return remote
+}
+
 // ReadMountRecords 按 remote 合并读取挂载记录，兼容旧版两段与三段格式。
 func ReadMountRecords() []MountRecord {
 	var records []MountRecord
@@ -313,21 +335,24 @@ func ReadMountRecords() []MountRecord {
 			if len(parts) < 2 {
 				continue
 			}
-			name := strings.TrimSuffix(strings.TrimSpace(parts[0]), ":")
+			// 保留记录里的路径部分，只在缺冒号时补齐。
+			remote := NormalizeRemote(parts[0])
 			drive := strings.TrimSpace(parts[1])
-			if name == "" || !isDriveLetter(drive) {
+			if RemoteName(remote) == "" || !isDriveLetter(drive) {
 				continue
 			}
-			key := strings.ToLower(name)
+			// 同一连接的不同路径是不同挂载，去重键必须用完整 remote。
+			key := strings.ToLower(remote)
 			if seen[key] {
 				continue
 			}
 			seen[key] = true
-			volume := name
+			// 卷标留空时由调用方按连接显示名填充，不再退化成内部连接名。
+			volume := ""
 			if len(parts) >= 3 && strings.TrimSpace(parts[2]) != "" {
 				volume = strings.TrimSpace(parts[2])
 			}
-			records = append(records, MountRecord{Remote: name + ":", Drive: strings.ToUpper(drive), VolumeName: volume})
+			records = append(records, MountRecord{Remote: remote, Drive: strings.ToUpper(drive), VolumeName: volume})
 		}
 	}
 	return records
@@ -348,7 +373,8 @@ func WriteMountRecords(records []MountRecord) error {
 	for _, record := range records {
 		volume := record.VolumeName
 		if volume == "" {
-			volume = strings.TrimSuffix(record.Remote, ":")
+			// 路径型 remote 用连接名兜底，避免写出 host:/ 这样的卷标。
+			volume = RemoteName(record.Remote)
 		}
 		builder.WriteString(record.Remote + "|" + record.Drive + "|" + volume + "\n")
 	}
