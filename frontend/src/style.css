@@ -184,6 +184,16 @@ section.files {
   color: var(--text);
 }
 #filter-stat { color: var(--muted); font-size: 11px; white-space: nowrap; }
+.chip {
+  flex: 0 0 auto;
+  padding: 3px 9px;
+  font-size: 12px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--muted);
+}
+.chip.active { background: var(--accent); border-color: var(--accent); color: #fff; }
 
 .crumbs b { color: var(--text); font-weight: 600; }
 

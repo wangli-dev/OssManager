@@ -54,7 +54,7 @@ func SettingsPath() string {
 
 // LoadSettings 读取设置；首次启动时尝试从 C# 版本迁移 rclone 配置路径。
 func LoadSettings() Settings {
-	value := Settings{Theme: "light", AutoSizeEnabled: true, AutoSizeDelay: 5, AutoSizeInterval: 2}
+	value := Settings{Theme: "light", AutoSizeDelay: 5, AutoSizeInterval: 2}
 	if data, err := os.ReadFile(SettingsPath()); err == nil {
 		_ = json.Unmarshal(data, &value)
 	} else if old := legacySettingsPath(); old != "" {

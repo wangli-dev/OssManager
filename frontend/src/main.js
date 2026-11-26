@@ -130,7 +130,13 @@ function closeTab(name) {
     state.path = ''; state.entries = []; state.selected = null; state.multi.clear();
     const next = tabOrder[tabOrder.length - 1];
     if (next) openTab(next);
-    else { renderTabs(); renderEntries(); updateFooter(); }
+    else {
+      renderTabs();
+      renderEntries();
+      updateFooter();
+      state.connCollapsed = false;
+      applyConnCollapsed();
+    }
   } else {
     renderTabs();
   }
@@ -300,6 +306,7 @@ function renderShell() {
   app.innerHTML = `
     <header>
       <button id="conn-quick" class="conn-quick" title="选择连接" style="display:none">选择连接 ▾</button>
+      <button id="conn-add" class="primary" title="新建连接 / 添加网络共享" style="display:none">+</button>
       <button id="conn-expand" title="展开连接栏" style="display:none">»</button>
       <button id="btn-mount">挂载</button>
       <button id="btn-unmount">卸载</button>
@@ -339,6 +346,7 @@ function renderShell() {
         <div id="tabs"></div>
         <div class="crumbs" id="crumbs">
           <div class="crumb-nav" id="crumb-nav"></div>
+          <button id="btn-autosize" class="chip" style="display:none">目录大小</button>
           <input id="filter-input" placeholder="筛选当前目录（名称包含关键字）" />
           <span id="filter-stat"></span>
         </div>
@@ -545,7 +553,7 @@ function renderShell() {
     </dialog>
   `;
   statusEl = document.getElementById('status');
-  document.getElementById('btn-new').onclick = (e) => {
+  const openCreateMenu = (e) => {
     e.stopPropagation(); // 防止冒泡到 document 的全局点击监听后立刻关闭菜单
     const rect = e.currentTarget.getBoundingClientRect();
     showMenu(rect.left, rect.bottom + 4, [
@@ -553,6 +561,9 @@ function renderShell() {
       { label: '添加网络共享…', action: openNetDialog },
     ]);
   };
+  document.getElementById('btn-new').onclick = openCreateMenu;
+  document.getElementById('conn-add').onclick = openCreateMenu;
+  document.getElementById('btn-autosize').onclick = toggleAutoSize;
   document.getElementById('conn-collapse').onclick = () => toggleConnPane(true);
   document.getElementById('conn-expand').onclick = () => toggleConnPane(false);
   document.getElementById('conn-quick').onclick = (e) => {
@@ -572,7 +583,11 @@ function renderShell() {
   document.getElementById('btn-about').onclick = openAbout;
   document.getElementById('btn-settings').onclick = openSettings;
   document.getElementById('btn-history').onclick = openHistory;
-  document.getElementById('btn-local').onclick = () => toggleLocal();
+  document.getElementById('btn-local').onclick = () => {
+    if (state.localTab) activateLocalTab();
+    else openLocalTab(state.local.path || 'C:\\', '本地文件');
+    toggleConnPane(true);
+  };
   document.getElementById('local-up').onclick = localUp;
   document.getElementById('local-hide').onclick = () => toggleLocal(false);
   document.getElementById('local-edit').onclick = editLocalPath;
@@ -641,6 +656,9 @@ async function boot() {
     applyTheme();
     await refresh();
     await initLocal();
+    // 启动/开始页面总是展示连接列表；打开连接后会自动收起。
+    state.connCollapsed = false;
+    applyConnCollapsed();
   } catch (err) { setStatus('启动失败：' + err, true); }
 }
 
@@ -727,13 +745,12 @@ function bindConnectionList(host) {
     node.oncontextmenu = (e) => {
       e.preventDefault();
       const name = node.dataset.name;
-      selectConnection(name);
       showMenu(e.clientX, e.clientY, [
         { label: '编辑连接…', action: () => openEdit(name) },
         { label: '测试连接', action: () => testConnection(name) },
         { label: '修改名称…', action: () => renameConnection(name) },
         { separator: true },
-        { label: mountDriveOf(name) ? '卸载' : '挂载', action: () => (mountDriveOf(name) ? unmountActive() : mountActive()) },
+        { label: mountDriveOf(name) ? '卸载' : '挂载', action: () => (mountDriveOf(name) ? unmountRemote(name) : mountRemote(name)) },
         { separator: true },
         { label: '删除连接', danger: true, action: () => deleteConnection(name) },
       ]);
@@ -792,10 +809,12 @@ function applyConnCollapsed() {
   const pane = document.getElementById('conn-pane');
   const bar = document.querySelector('.resizer[data-target="conn-pane"]');
   const quick = document.getElementById('conn-quick');
+  const add = document.getElementById('conn-add');
   const expand = document.getElementById('conn-expand');
   if (pane) pane.style.display = collapsed ? 'none' : '';
   if (bar) bar.style.display = collapsed ? 'none' : '';
   if (quick) quick.style.display = collapsed ? '' : 'none';
+  if (add) add.style.display = collapsed ? '' : 'none';
   if (expand) expand.style.display = collapsed ? '' : 'none';
   localStorage.setItem('ossmanager.connCollapsed', collapsed ? '1' : '0');
   if (collapsed) renderConnQuick();
@@ -849,7 +868,11 @@ function closeLocalTab() {
   renderTabs();
   renderConnections();
   if (state.active) restoreActiveTab();
-  else renderEntries();
+  else {
+    renderEntries();
+    state.connCollapsed = false;
+    applyConnCollapsed();
+  }
 }
 
 async function loadLocalView(path) {
@@ -876,6 +899,8 @@ function localViewUp() {
 function renderLocalView() {
   const crumbs = document.getElementById('crumbs');
   crumbs.style.display = 'flex';
+  const autoBtn = document.getElementById('btn-autosize');
+  if (autoBtn) autoBtn.style.display = 'none';
   applyWindowTitle();
   const nav = document.getElementById('crumb-nav');
   nav.innerHTML = `<a href="#" id="local-view-up" title="上级目录">↑</a><span class="trail"><b>${esc(state.localTab.label)}</b> ${esc(state.localView.path)}</span>`;
@@ -900,7 +925,7 @@ function renderLocalView() {
     const icon = entry.isDir ? '📁' : '📄';
     const cls = entry.isDir ? 'dir' : 'file';
     const size = entry.isDir ? '' : fmtSize(entry.size);
-    return `<tr class="row ${cls}" data-full="${esc(full)}" data-name="${esc(entry.name)}" data-dir="${entry.isDir}">
+    return `<tr class="row ${cls}" data-full="${esc(full)}" data-name="${esc(entry.name)}" data-dir="${entry.isDir}" data-size="${entry.size || 0}" data-time="${esc(entry.modTime || '')}">
       <td><span class="icon">${icon}</span>${esc(entry.name)}</td>
       <td class="size">${esc(size)}</td>
       <td class="time">${esc(entry.modTime || '')}</td>
@@ -915,6 +940,11 @@ function renderLocalView() {
   host.querySelectorAll('tr.row').forEach((row) => {
     const full = row.dataset.full;
     const isDir = row.dataset.dir === 'true';
+    row.onclick = () => {
+      host.querySelectorAll('tr.row').forEach((item) => item.classList.toggle('selected', item === row));
+      const kind = isDir ? '目录' : `文件 ${fmtSize(Number(row.dataset.size || 0))}`;
+      setStatus(`本地 · ${full} · ${kind} · 修改时间 ${row.dataset.time || '未知'}`);
+    };
     row.ondblclick = () => { if (isDir) loadLocalView(full); else api().OpenFolder(full).catch(() => {}); };
     row.oncontextmenu = (e) => {
       e.preventDefault();
@@ -1002,6 +1032,26 @@ async function loadEntries() {
   }
 }
 
+function updateAutoSizeButton() {
+  const button = document.getElementById('btn-autosize');
+  if (!button) return;
+  const enabled = !!(state.settings && state.settings.autoSizeEnabled);
+  button.classList.toggle('active', enabled);
+  button.title = enabled ? '自动统计目录大小：开（点击关闭）' : '自动统计目录大小：关（点击开启）';
+}
+
+// toggleAutoSize 在页面直接开关目录大小自动统计，并持久化到设置。
+async function toggleAutoSize() {
+  const enabled = !(state.settings && state.settings.autoSizeEnabled);
+  state.settings = { ...state.settings, autoSizeEnabled: enabled };
+  updateAutoSizeButton();
+  try { await api().SaveSettings(state.settings); }
+  catch (err) { notify('保存设置失败：' + err, true); }
+  if (enabled) scheduleAutoSize();
+  else cancelAutoSize();
+  notify(enabled ? '已开启目录大小自动统计' : '已关闭目录大小自动统计');
+}
+
 // ===== 目录大小自动统计：打开目录后延时逐个统计，间隔可配置 =====
 let autoSizeTimer = null;
 let autoSizeToken = 0;
@@ -1063,6 +1113,9 @@ function updateFooter(extra) {
 function renderEntries() {
   if (state.view === 'local' && state.localTab) { renderLocalView(); return; }
   const crumbs = document.getElementById('crumbs');
+  const autoBtn = document.getElementById('btn-autosize');
+  if (autoBtn) autoBtn.style.display = state.active ? '' : 'none';
+  updateAutoSizeButton();
   crumbs.style.display = state.active ? 'flex' : 'none';
   applyWindowTitle();
   if (!state.active) {
@@ -1093,7 +1146,7 @@ function renderEntries() {
   nav.innerHTML = `<a href="#" id="go-up" title="上级目录">↑</a><span class="trail">${trail}</span>`;
   document.getElementById('go-up').onclick = (e) => { e.preventDefault(); goUp(); };
   nav.querySelectorAll('a[data-path]').forEach((link) => {
-    link.onclick = (e) => { e.preventDefault(); state.path = link.dataset.path; state.selected = null; clearFilter(); loadEntries(); };
+    link.onclick = (e) => { e.preventDefault(); navigateRemote(link.dataset.path); };
   });
 
   const host = document.getElementById('entries');
@@ -1507,34 +1560,59 @@ async function confirmNet() {
   } catch (err) { notify('连接失败：' + err, true); }
 }
 
-function enterDir(name) { state.selected = null; state.multi.clear(); clearFilter(); state.path = state.path ? state.path + '/' + name : name; loadEntries(); }
-function goUp() { state.selected = null; state.multi.clear(); clearFilter(); const p = state.path.split('/').filter(Boolean); p.pop(); state.path = p.join('/'); loadEntries(); }
+// navigateRemote 先显示加载占位再请求列表，双击进入时反馈更快。
+function navigateRemote(path) {
+  state.selected = null;
+  state.multi.clear();
+  clearFilter();
+  state.path = path;
+  if (state.active) {
+    showBrowseLoading(state.active + ':' + path);
+    renderTabs();
+  }
+  loadEntries();
+}
+
+function enterDir(name) { navigateRemote(state.path ? state.path + '/' + name : name); }
+function goUp() { const parts = state.path.split('/').filter(Boolean); parts.pop(); navigateRemote(parts.join('/')); }
 
 async function mountActive() {
-  if (!state.active) { notify('请先选择连接', true); return; }
+  return mountRemote(state.active);
+}
+
+// mountRemote 挂载指定连接到盘符；右键菜单不切换当前页签也能挂载。
+async function mountRemote(name) {
+  if (!name) { notify('请先选择连接', true); return; }
   const drives = (await api().FreeDrives()) || [];
   if (!drives.length) { notify('没有可用盘符', true); return; }
+  state.mountTarget = name;
   const select = document.getElementById('mount-drive');
   select.innerHTML = drives.map((drive) => `<option value="${esc(drive)}">${esc(drive)}</option>`).join('');
-  const connection = state.connections.find((item) => item.name === state.active);
-  document.getElementById('mount-volume').value = connection ? connection.displayName : state.active;
+  const connection = state.connections.find((item) => item.name === name);
+  document.getElementById('mount-volume').value = connection ? connection.displayName : name;
   document.getElementById('mount-dialog').showModal();
 }
 
 async function confirmMount() {
+  const target = state.mountTarget || state.active;
   const drive = document.getElementById('mount-drive').value;
   const volume = document.getElementById('mount-volume').value.trim();
-  if (!drive) return;
+  if (!target || !drive) return;
   document.getElementById('mount-dialog').close();
-  setStatus('正在挂载 ' + state.active + ' → ' + drive + ' …');
-  try { await api().Mount(state.active, drive, volume); await refresh(); notify('已挂载到 ' + drive); }
+  setStatus('正在挂载 ' + target + ' → ' + drive + ' …');
+  try { await api().Mount(target, drive, volume); await refresh(); notify('已挂载到 ' + drive); }
   catch (err) { notify('挂载失败：' + err, true); }
+  finally { state.mountTarget = null; }
 }
 
 async function unmountActive() {
-  if (!state.active) { setStatus('请先选择连接', true); return; }
-  setStatus('正在卸载 ' + state.active + ' …');
-  try { await api().UnmountByRemote(state.active); await refresh(); notify('已卸载 ' + state.active); }
+  return unmountRemote(state.active);
+}
+
+async function unmountRemote(name) {
+  if (!name) { setStatus('请先选择连接', true); return; }
+  setStatus('正在卸载 ' + name + ' …');
+  try { await api().UnmountByRemote(name); await refresh(); notify('已卸载 ' + name); }
   catch (err) { setStatus('卸载失败：' + err, true); }
 }
 
@@ -2319,7 +2397,7 @@ async function saveSettings() {
     downloadDirectory: document.getElementById('set-download-dir').value.trim(),
     dragMode: document.getElementById('set-drag-mode').value,
   };
-  try { await api().SaveSettings(next); state.settings = next; document.getElementById('settings-dialog').close(); await refresh(); setStatus('设置已保存'); }
+  try { await api().SaveSettings(next); state.settings = next; document.getElementById('settings-dialog').close(); updateAutoSizeButton(); await refresh(); setStatus('设置已保存'); }
   catch (err) { setStatus('保存设置失败：' + err, true); }
 }
 
