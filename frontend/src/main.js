@@ -170,6 +170,10 @@ function renderShell() {
       <label>传输缓冲</label><input id="set-buffer" />
       <label>并发传输数（下载/上传同时进行）</label>
       <input id="set-transfers" type="number" min="1" max="16" />
+      <div class="row">
+        <button id="set-export-bundle">导出配置包…</button>
+        <button id="set-import-bundle">导入配置包…</button>
+      </div>
       <div class="footer">
         <button id="settings-cancel">取消</button>
         <button id="settings-save" class="primary">保存</button>
@@ -256,6 +260,8 @@ function renderShell() {
   document.getElementById('pd-apply').onclick = applyStatement;
   document.getElementById('settings-cancel').onclick = () => document.getElementById('settings-dialog').close();
   document.getElementById('settings-save').onclick = saveSettings;
+  document.getElementById('set-export-bundle').onclick = exportBundle;
+  document.getElementById('set-import-bundle').onclick = importBundle;
 }
 
 async function boot() {
@@ -999,6 +1005,26 @@ function openSettings() {
   document.getElementById('set-buffer').value = s.bufferSize || '';
   document.getElementById('set-transfers').value = s.maxConcurrentTransfers || 4;
   document.getElementById('settings-dialog').showModal();
+}
+
+async function exportBundle() {
+  const path = await api().PickSaveFile('ossmanager-config.zip');
+  if (!path) return;
+  try { const msg = await api().ExportBundle(path); notify(msg); }
+  catch (err) { notify('导出配置包失败：' + err, true); }
+}
+
+async function importBundle() {
+  const path = await api().PickFile();
+  if (!path) return;
+  if (!confirm('导入配置包将覆盖当前设置、rclone 配置与挂载记录（原文件备份为 .bak），继续？')) return;
+  try {
+    const msg = await api().ImportBundle(path);
+    state.settings = await api().GetSettings();
+    openSettings();
+    await refresh();
+    notify(msg);
+  } catch (err) { notify('导入配置包失败：' + err, true); }
 }
 
 async function saveSettings() {

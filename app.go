@@ -15,6 +15,7 @@ import (
 	"github.com/rclone/rclone/fs"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 
+	"OssManager/internal/bundle"
 	"OssManager/internal/clipboard"
 	"OssManager/internal/config"
 	"OssManager/internal/connjson"
@@ -370,6 +371,39 @@ func (a *App) ExportConnections(path string, includeSecrets bool) (string, error
 }
 
 // ImportConnections 从 JSON 导入连接。
+// ExportBundle 把设置、rclone 配置与挂载记录打包为 zip 配置包，用于换机迁移。
+func (a *App) ExportBundle(zipPath string) (string, error) {
+	entries := []bundle.Entry{
+		{Name: "settings.json", Path: config.SettingsPath()},
+		{Name: "rclone.conf", Path: a.settings.RcloneConfig},
+		{Name: "mounts.txt", Path: config.MountRecordPath()},
+	}
+	err := bundle.Export(zipPath, entries)
+	logf("ExportBundle path=%s err=%v", zipPath, err)
+	if err != nil {
+		return "", err
+	}
+	return "配置包已导出（rclone 配置含连接密钥，请妥善保管）", nil
+}
+
+// ImportBundle 导入配置包：成员写回前备份 .bak，随后立即重载设置与传输并发数。
+func (a *App) ImportBundle(zipPath string) (string, error) {
+	entries := []bundle.Entry{
+		{Name: "settings.json", Path: config.SettingsPath()},
+		{Name: "rclone.conf", Path: a.settings.RcloneConfig},
+		{Name: "mounts.txt", Path: config.MountRecordPath()},
+	}
+	restored, err := bundle.Import(zipPath, entries)
+	logf("ImportBundle path=%s err=%v", zipPath, err)
+	if err != nil {
+		return "", err
+	}
+	value := config.LoadSettings()
+	a.settings = value
+	transfer.SetConcurrency(value.MaxConcurrentTransfers)
+	return "已导入：" + strings.Join(restored, "、"), nil
+}
+
 func (a *App) ImportConnections(path string) (string, error) {
 	return connjson.Import(a.settings.RcloneConfig, path)
 }
