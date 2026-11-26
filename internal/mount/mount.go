@@ -22,12 +22,13 @@ import (
 
 // Options 是挂载高级参数，空值表示使用 rclone 默认。
 type Options struct {
-	CacheDirectory  string
-	DirCacheTime    string
-	VfsCacheMaxSize string
-	VfsCacheMaxAge  string
-	BufferSize      string
-	VolumeName      string
+	CacheDirectory   string
+	DirCacheTime     string
+	VfsCacheMaxSize  string
+	VfsCacheMaxAge   string
+	BufferSize       string
+	VolumeName       string
+	UseServerModtime bool
 }
 
 type mountEntry struct {
@@ -167,5 +168,8 @@ func applyOptions(ctx context.Context, v *vfscommon.Options, opts Options) {
 		if d, err := fs.ParseDuration(opts.VfsCacheMaxAge); err == nil {
 			v.CacheMaxAge = fs.Duration(d)
 		}
+	}
+	if opts.UseServerModtime {
+		cfg.UseServerModTime = true
 	}
 }

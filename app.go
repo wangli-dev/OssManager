@@ -58,13 +58,23 @@ func (a *App) startup(ctx context.Context) {
 	go a.restoreMounts()
 }
 
-func (a *App) mountOptions() mount.Options {
+func (a *App) mountOptions(remote string) mount.Options {
+	// ServerModtimeRemotes 中的连接使用服务器修改时间，避免浏览目录时逐个请求对象元数据。
+	useServerModtime := false
+	name := strings.TrimSuffix(remote, ":")
+	for _, item := range a.settings.ServerModtimeRemotes {
+		if strings.EqualFold(strings.TrimSpace(item), name) {
+			useServerModtime = true
+			break
+		}
+	}
 	return mount.Options{
-		CacheDirectory:  a.settings.CacheDirectory,
-		DirCacheTime:    a.settings.DirCacheTime,
-		VfsCacheMaxSize: a.settings.VfsCacheMaxSize,
-		VfsCacheMaxAge:  a.settings.VfsCacheMaxAge,
-		BufferSize:      a.settings.BufferSize,
+		CacheDirectory:   a.settings.CacheDirectory,
+		DirCacheTime:     a.settings.DirCacheTime,
+		VfsCacheMaxSize:  a.settings.VfsCacheMaxSize,
+		VfsCacheMaxAge:   a.settings.VfsCacheMaxAge,
+		BufferSize:       a.settings.BufferSize,
+		UseServerModtime: useServerModtime,
 	}
 }
 
@@ -80,7 +90,7 @@ func (a *App) restoreMounts() {
 		if _, err := os.Stat(record.Drive + `\`); err == nil {
 			continue
 		}
-		if err := a.mounter.Mount(a.ctx, a.settings.RcloneConfig, remote, record.Drive, a.mountOptions()); err != nil {
+		if err := a.mounter.Mount(a.ctx, a.settings.RcloneConfig, remote, record.Drive, a.mountOptions(remote)); err != nil {
 			logf("restore mount %s %s err=%v", remote, record.Drive, err)
 		} else {
 			logf("restore mount %s %s ok", remote, record.Drive)
@@ -178,7 +188,7 @@ func (a *App) List(remote string) ([]rclonefs.Entry, error) {
 func (a *App) Mount(remote, drive, volumeName string) error {
 	remote = strings.TrimSuffix(remote, ":") + ":"
 	logf("Mount remote=%s drive=%s volume=%s", remote, drive, volumeName)
-	options := a.mountOptions()
+	options := a.mountOptions(remote)
 	options.VolumeName = volumeName
 	err := a.mounter.Mount(a.ctx, a.settings.RcloneConfig, remote, drive, options)
 	logf("Mount result err=%v", err)
