@@ -29,6 +29,7 @@ export namespace config {
 	    bufferSize: string;
 	    maxConcurrentTransfers: number;
 	    downloadDirectory: string;
+	    dragMode: string;
 	    serverModtimeRemotes: string[];
 	
 	    static createFrom(source: any = {}) {
@@ -47,6 +48,7 @@ export namespace config {
 	        this.bufferSize = source["bufferSize"];
 	        this.maxConcurrentTransfers = source["maxConcurrentTransfers"];
 	        this.downloadDirectory = source["downloadDirectory"];
+	        this.dragMode = source["dragMode"];
 	        this.serverModtimeRemotes = source["serverModtimeRemotes"];
 	    }
 	}

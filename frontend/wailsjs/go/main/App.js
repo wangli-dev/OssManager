@@ -54,6 +54,14 @@ export function DownloadUpdate(arg1) {
   return window['go']['main']['App']['DownloadUpdate'](arg1);
 }
 
+export function DragOutFiles(arg1) {
+  return window['go']['main']['App']['DragOutFiles'](arg1);
+}
+
+export function ExportBundle(arg1) {
+  return window['go']['main']['App']['ExportBundle'](arg1);
+}
+
 export function ExportConnections(arg1, arg2, arg3) {
   return window['go']['main']['App']['ExportConnections'](arg1, arg2, arg3);
 }
@@ -84,6 +92,10 @@ export function GetPolicy(arg1, arg2) {
 
 export function GetSettings() {
   return window['go']['main']['App']['GetSettings']();
+}
+
+export function ImportBundle(arg1) {
+  return window['go']['main']['App']['ImportBundle'](arg1);
 }
 
 export function ImportConnections(arg1, arg2) {
@@ -192,6 +204,10 @@ export function SaveObjectText(arg1, arg2, arg3) {
 
 export function SaveSettings(arg1) {
   return window['go']['main']['App']['SaveSettings'](arg1);
+}
+
+export function SetACL(arg1, arg2, arg3) {
+  return window['go']['main']['App']['SetACL'](arg1, arg2, arg3);
 }
 
 export function SetClipboard(arg1) {

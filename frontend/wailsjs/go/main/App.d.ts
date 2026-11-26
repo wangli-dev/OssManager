@@ -35,6 +35,10 @@ export function DownloadTasks():Promise<Array<transfer.Task>>;
 
 export function DownloadUpdate(arg1:string):Promise<void>;
 
+export function DragOutFiles(arg1:Array<string>):Promise<string>;
+
+export function ExportBundle(arg1:string):Promise<string>;
+
 export function ExportConnections(arg1:string,arg2:boolean,arg3:boolean):Promise<string>;
 
 export function FreeDrives():Promise<Array<string>>;
@@ -50,6 +54,8 @@ export function GetLog():Promise<string>;
 export function GetPolicy(arg1:string,arg2:string):Promise<string>;
 
 export function GetSettings():Promise<config.Settings>;
+
+export function ImportBundle(arg1:string):Promise<string>;
 
 export function ImportConnections(arg1:string,arg2:boolean):Promise<string>;
 
@@ -104,6 +110,8 @@ export function SaveConnectionOrder(arg1:Array<string>):Promise<void>;
 export function SaveObjectText(arg1:string,arg2:string,arg3:string):Promise<void>;
 
 export function SaveSettings(arg1:config.Settings):Promise<void>;
+
+export function SetACL(arg1:string,arg2:string,arg3:string):Promise<void>;
 
 export function SetClipboard(arg1:string):Promise<void>;
 
