@@ -391,9 +391,7 @@ section.local .pane-head button { padding: 4px 9px; }
 
 .hint { color: var(--muted); font-size: 12px; word-break: break-all; }
 
-.section-title { margin: 12px 0 6px; color: var(--muted); font-size: 12px; }
-.section-title .count { color: var(--accent-text); }
-.task-list { max-height: 200px; }
+h2 .count { color: var(--accent-text); font-size: 12px; font-weight: normal; margin-left: 8px; }
 .hline .badge {
   font-size: 11px;
   padding: 1px 6px;

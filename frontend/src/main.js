@@ -265,11 +265,8 @@ function renderShell() {
       <div class="footer"><button id="log-close" class="primary">关闭</button></div>
     </dialog>
     <dialog id="history-dialog">
-      <h2>下载记录</h2>
-      <div class="section-title">正在下载 <span id="task-count" class="count"></span></div>
-      <div id="task-list" class="history-list task-list"></div>
-      <div class="section-title">历史记录</div>
-      <div id="history-list" class="history-list"></div>
+      <h2>下载记录 <span id="task-count" class="count"></span></h2>
+      <div id="download-list" class="history-list"></div>
       <div class="footer">
         <button id="history-clear">清空记录</button>
         <button id="history-close" class="primary">关闭</button>
@@ -1444,8 +1441,7 @@ async function confirmImport() {
 
 async function openHistory() {
   try {
-    await refreshTasks();
-    await renderHistory();
+    await refreshDownloadList();
     document.getElementById('history-dialog').showModal();
     startTaskRefresh();
   } catch (err) { notify('读取下载记录失败：' + err, true); }
@@ -1455,7 +1451,7 @@ let taskTimer = null;
 
 function startTaskRefresh() {
   stopTaskRefresh();
-  taskTimer = setInterval(refreshTasks, 800);
+  taskTimer = setInterval(refreshDownloadList, 800);
 }
 
 function stopTaskRefresh() {
@@ -1469,56 +1465,74 @@ function fmtElapsed(ms) {
   return m > 0 ? `${m} 分 ${s} 秒` : `${s} 秒`;
 }
 
-let lastRunningCount = -1;
-
-async function refreshTasks() {
+// refreshDownloadList 把正在下载、失败任务与历史记录合成同一个列表，按时间倒序展示。
+async function refreshDownloadList() {
   let tasks = [];
-  try { tasks = (await api().DownloadTasks()) || []; } catch (err) { return; }
-  const running = tasks.filter((task) => task.status === 'running');
-  document.getElementById('task-count').textContent = running.length ? `${running.length} 个` : '';
-  // 有任务结束时历史记录会新增一条，顺带刷新历史区。
-  if (lastRunningCount >= 0 && running.length < lastRunningCount) renderHistory();
-  lastRunningCount = running.length;
-  const host = document.getElementById('task-list');
-  if (!tasks.length) { host.innerHTML = '<div class="empty">没有下载任务</div>'; return; }
-  host.innerHTML = tasks.map((task) => {
-    const percent = task.total > 0 ? Math.min(100, Math.round((task.done / task.total) * 100)) : 0;
-    const badge = task.status === 'done' ? '<span class="badge done">完成</span>'
-      : task.status === 'error' ? '<span class="badge error">失败</span>'
-        : `<span class="badge">${percent}%</span>`;
-    const detail = task.status === 'running'
-      ? `${fmtSize(task.done)} / ${fmtSize(task.total)} · ${fmtSize(task.speed)}/s · 已用 ${fmtElapsed(task.elapsed)}`
-      : task.status === 'error'
-        ? esc(task.error || '下载失败')
-        : `${fmtSize(task.total)} · 耗时 ${fmtElapsed(task.elapsed)}`;
-    return `<div class="hline">
-      <div class="hname">${esc(task.name)} ${badge}</div>
-      <div class="hbar"><div class="hfill ${task.status}" style="width:${task.status === 'done' ? 100 : percent}%"></div></div>
-      <div class="hmeta">${detail}</div>
-      <div class="hpath" title="${esc(task.localPath || '')}">${esc(task.localPath || '')}</div>
+  let records = [];
+  try { tasks = (await api().DownloadTasks()) || []; } catch (err) { /* 任务表不可用时只显示历史 */ }
+  try { records = (await api().DownloadHistory()) || []; } catch (err) { /* 历史不可用时只显示任务 */ }
+  // 已完成任务已由后端写入历史记录，这里只保留运行中与失败的任务，避免重复。
+  const pending = tasks.filter((task) => task.status !== 'done');
+  const running = pending.filter((task) => task.status === 'running');
+  document.getElementById('task-count').textContent = running.length ? `正在下载 ${running.length} 个` : '';
+  const items = [
+    ...pending.map((task) => ({
+      time: task.started,
+      name: task.name,
+      percent: task.total > 0 ? Math.min(100, Math.round((task.done / task.total) * 100)) : 0,
+      status: task.status,
+      size: task.status === 'running' ? `${fmtSize(task.done)} / ${fmtSize(task.total)}` : fmtSize(task.total),
+      speed: task.status === 'running' ? `${fmtSize(task.speed)}/s` : '',
+      elapsed: task.status === 'running' ? '已用 ' + fmtElapsed(task.elapsed) : (task.elapsed ? '耗时 ' + fmtElapsed(task.elapsed) : ''),
+      error: task.error || '',
+      remote: task.path || '',
+      localPath: task.localPath || '',
+    })),
+    ...records.map((record) => ({
+      time: record.time,
+      name: record.name,
+      percent: 100,
+      status: 'done',
+      size: record.size ? fmtSize(record.size) : '目录',
+      speed: '',
+      elapsed: '',
+      error: '',
+      remote: record.path || '',
+      localPath: record.localPath || '',
+    })),
+  ];
+  items.sort((left, right) => String(right.time).localeCompare(String(left.time)));
+  const host = document.getElementById('download-list');
+  if (!items.length) { host.innerHTML = '<div class="empty">还没有下载记录</div>'; return; }
+  host.innerHTML = items.map((item) => {
+    const badge = item.status === 'running'
+      ? `<span class="badge">下载中 ${item.percent}%</span>`
+      : item.status === 'error'
+        ? '<span class="badge error">失败</span>'
+        : '<span class="badge done">已完成</span>';
+    const detail = [item.size, item.speed, item.elapsed].filter(Boolean).join(' · ');
+    const bar = item.status === 'running'
+      ? `<div class="hbar"><div class="hfill" style="width:${item.percent}%"></div></div>`
+      : '';
+    const note = item.error ? ' · ' + esc(item.error) : '';
+    return `<div class="hline" data-path="${esc(item.localPath)}">
+      <div class="hname" title="${esc(item.remote || item.name)}">${esc(item.name)} ${badge}</div>
+      ${bar}
+      <div class="hmeta">${esc(item.time)}${detail ? ' · ' + esc(detail) : ''}${note}</div>
+      <div class="hpath" title="${esc(item.localPath)}">${esc(item.localPath)}</div>
     </div>`;
   }).join('');
-}
-
-async function renderHistory() {
-  const records = (await api().DownloadHistory()) || [];
-  const host = document.getElementById('history-list');
-  if (!records.length) { host.innerHTML = '<div class="empty">还没有下载记录</div>'; return; }
-  host.innerHTML = records.map((record) => `<div class="hline" data-path="${esc(record.localPath)}">
-    <div class="hname" title="${esc(record.name)}">${esc(record.name)}</div>
-    <div class="hmeta">${esc(record.time)} · ${esc(record.remote || '')} · ${record.size ? esc(fmtSize(record.size)) : '目录'}</div>
-    <div class="hpath" title="${esc(record.localPath)}">${esc(record.localPath)}</div>
-  </div>`).join('');
   host.querySelectorAll('.hline').forEach((node) => {
+    const path = node.dataset.path;
+    if (!path) return;
     node.oncontextmenu = (e) => {
       e.preventDefault();
-      const path = node.dataset.path;
       showMenu(e.clientX, e.clientY, [
         { label: '打开所在文件夹', action: () => api().OpenDownloadFolder(path).catch((err) => notify('打开失败：' + err, true)) },
         { label: '复制本地路径', action: () => { api().SetClipboard(path); notify('已复制：' + path); } },
       ]);
     };
-    node.ondblclick = () => api().OpenDownloadFolder(node.dataset.path).catch((err) => notify('打开失败：' + err, true));
+    node.ondblclick = () => api().OpenDownloadFolder(path).catch((err) => notify('打开失败：' + err, true));
   });
 }
 
@@ -1527,8 +1541,7 @@ async function clearHistory() {
   try {
     await api().ClearDownloadHistory();
     await api().ClearDownloadTasks();
-    await refreshTasks();
-    await renderHistory();
+    await refreshDownloadList();
     notify('已清空下载记录');
   } catch (err) { notify('清空失败：' + err, true); }
 }
