@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/rclone/rclone/fs"
+	"OssManager/internal/rclonefs"
 )
 
 // Task 是一个下载任务的实时状态，供界面展示进度与速度。
@@ -177,7 +178,7 @@ func DownloadWithProgress(ctx context.Context, confPath, remotePath, localDir st
 	if name == "" {
 		return "", os.ErrInvalid
 	}
-	srcFs, err := fs.NewFs(ctx, parent)
+	srcFs, err := rclonefs.NewFs(ctx, confPath, parent)
 	if err != nil {
 		return "", err
 	}

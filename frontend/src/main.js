@@ -13,7 +13,6 @@ const state = {
   selected: null,
   multi: new Set(),
   local: { path: '', entries: [], drives: [], visible: true },
-  crumbsVisible: false,
   filter: '',
   sort: { key: 'name', dir: 1 },
   nameWidth: 320,
@@ -132,7 +131,7 @@ let menuEl;
 const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
 // ===== 文件列表栏：标题、筛选、排序与列宽 =====
-const COL_SIZE = 90, COL_TIME = 160, COL_OPS = 120, COL_NAME_MIN = 120, COL_NAME_MAX = 900;
+const COL_SIZE = 80, COL_TIME = 150, COL_OPS = 96, COL_NAME_MIN = 120, COL_NAME_MAX = 900;
 
 function loadNameWidth() {
   const saved = parseInt(localStorage.getItem('ossmanager.nameWidth') || '', 10);
@@ -267,8 +266,8 @@ document.addEventListener('click', (e) => { if (menuEl && !menuEl.contains(e.tar
 function renderShell() {
   app.innerHTML = `
     <header>
-      <button id="btn-new" class="primary" title="新建连接 / 添加网络共享">+</button>
-      <span class="tool-sep"></span>
+      <select id="conn-quick" class="conn-quick" title="选择连接" style="display:none"></select>
+      <button id="conn-expand" title="展开连接栏" style="display:none">»</button>
       <button id="btn-mount">挂载</button>
       <button id="btn-unmount">卸载</button>
       <span class="tool-sep"></span>
@@ -276,10 +275,7 @@ function renderShell() {
       <button id="btn-download">下载</button>
       <button id="btn-history">下载记录</button>
       <div class="actions">
-        <select id="conn-quick" class="conn-quick" title="选择连接" style="display:none"></select>
-        <button id="conn-expand" title="展开连接栏" style="display:none">»</button>
         <span class="tool-sep"></span>
-        <button id="btn-crumbs">路径栏</button>
         <button id="btn-local">本地栏</button>
         <span class="tool-sep"></span>
         <button id="btn-import">导入</button>
@@ -291,13 +287,12 @@ function renderShell() {
       </div>
     </header>
     <main>
-      <aside id="conn-pane"><div class="list-head"><span class="list-title">连接</span><span class="list-tools-inline"><button id="btn-refresh" title="刷新连接列表">⟳</button><button id="conn-collapse" title="收起连接栏">«</button></span></div><div id="connections"></div></aside>
+      <aside id="conn-pane"><div class="list-head"><span class="list-title">连接</span><span class="list-tools-inline"><button id="btn-refresh" title="刷新连接列表">⟳</button><button id="btn-new" class="primary" title="新建连接 / 添加网络共享">+</button><button id="conn-collapse" title="收起连接栏">«</button></span></div><div id="connections"></div></aside>
       <div class="resizer" data-target="conn-pane" title="拖动调整宽度"></div>
       <section class="local" id="local-pane">
         <div class="pane-head">
           <button id="local-up" title="上级目录">↑</button>
           <select id="local-drives" title="盘符"></select>
-          <button id="local-net" title="连接局域网共享">网络</button>
           <button id="local-hide" title="隐藏本地栏">✕</button>
         </div>
         <div class="local-pathbar">
@@ -309,11 +304,11 @@ function renderShell() {
       <div class="resizer" data-target="local-pane" title="拖动调整宽度"></div>
       <section class="files">
         <div id="tabs"></div>
-        <div class="list-tools" id="list-tools">
+        <div class="crumbs" id="crumbs">
+          <div class="crumb-nav" id="crumb-nav"></div>
           <input id="filter-input" placeholder="筛选当前目录（名称包含关键字）" />
           <span id="filter-stat"></span>
         </div>
-        <div class="crumbs" id="crumbs"></div>
         <div id="entries"></div>
       </section>
     </main>
@@ -333,7 +328,11 @@ function renderShell() {
       </select>
       <label>端点 / 主机</label><input id="edit-endpoint" />
       <label>账号 / Access Key</label><input id="edit-account" />
-      <label>密钥（编辑时留空表示不修改）</label><input id="edit-secret" type="password" />
+      <label>密钥（编辑时留空表示不修改）</label>
+      <div class="secret-row">
+        <input id="edit-secret" type="password" />
+        <button id="edit-secret-eye" type="button" title="显示/隐藏密钥">👁</button>
+      </div>
       <label>区域（可空）</label><input id="edit-region" />
       <div class="footer">
         <button id="edit-cancel">取消</button>
@@ -374,10 +373,12 @@ function renderShell() {
         <button id="policy-save" class="primary">保存策略</button>
       </div>
     </dialog>
-    <dialog id="settings-dialog">
+    <dialog id="settings-dialog" class="settings">
       <h2>设置</h2>
+      <h3>连接与文件</h3>
       <label>rclone 配置文件</label><input id="set-config" />
       <label>文件管理器（留空自动探测）</label><input id="set-filemanager" />
+      <h3>缓存</h3>
       <div class="row">
         <div><label>缓存目录</label><input id="set-cache-dir" /></div>
         <div><label>目录缓存时长</label><input id="set-dir-cache" /></div>
@@ -387,21 +388,24 @@ function renderShell() {
         <div><label>缓存保留时长</label><input id="set-cache-age" /></div>
       </div>
       <label>传输缓冲</label><input id="set-buffer" />
-      <label>并发传输数（下载/上传同时进行）</label>
-      <input id="set-transfers" type="number" min="1" max="16" />
-      <label>下载线程数（单文件分片数，1 表示不分片）</label>
-      <input id="set-streams" type="number" min="1" max="16" />
-      <label class="chk"><input type="checkbox" id="set-autosize" /> 自动统计目录大小</label>
+      <h3>传输</h3>
       <div class="row">
-        <div><label>打开目录后延迟（秒）</label><input id="set-autosize-delay" type="number" min="0" max="60" /></div>
-        <div><label>目录之间间隔（秒）</label><input id="set-autosize-interval" type="number" min="0" max="60" /></div>
+        <div><label>并发传输数（同时下载/上传的文件数）</label><input id="set-transfers" type="number" min="1" max="16" /></div>
+        <div><label>下载线程数（单文件分片，1 为不分片）</label><input id="set-streams" type="number" min="1" max="16" /></div>
       </div>
-      <label>默认下载目录（留空则每次询问）</label><input id="set-download-dir" placeholder="例如 D:\Downloads" />
       <label>拖拽远程文件时</label>
       <select id="set-drag-mode">
         <option value="panes">拖到本地栏（页内传输）</option>
         <option value="shell">拖到资源管理器（复制落盘）</option>
       </select>
+      <h3>下载与目录统计</h3>
+      <label>默认下载目录（留空则每次询问）</label><input id="set-download-dir" placeholder="例如 D:\Downloads" />
+      <label class="chk"><input type="checkbox" id="set-autosize" /> 自动统计目录大小</label>
+      <div class="row">
+        <div><label>打开目录后延迟（秒）</label><input id="set-autosize-delay" type="number" min="0" max="60" /></div>
+        <div><label>目录之间间隔（秒）</label><input id="set-autosize-interval" type="number" min="0" max="60" /></div>
+      </div>
+      <h3>配置迁移</h3>
       <div class="row">
         <button id="set-export-bundle">导出配置包…</button>
         <button id="set-import-bundle">导入配置包…</button>
@@ -525,10 +529,8 @@ function renderShell() {
   document.getElementById('btn-local').onclick = () => toggleLocal();
   document.getElementById('local-up').onclick = localUp;
   document.getElementById('local-hide').onclick = () => toggleLocal(false);
-  document.getElementById('local-net').onclick = openNetDialog;
-  document.getElementById('local-drives').onchange = (e) => navigateLocal(e.target.value);
   document.getElementById('local-edit').onclick = editLocalPath;
-  document.getElementById('btn-crumbs').onclick = toggleCrumbs;
+  document.getElementById('local-drives').onchange = (e) => navigateLocal(e.target.value);
   document.getElementById('filter-input').oninput = (e) => {
     state.filter = e.target.value;
     renderEntries();
@@ -557,6 +559,13 @@ function renderShell() {
   document.getElementById('log-close').onclick = () => document.getElementById('log-dialog').close();
   document.getElementById('edit-cancel').onclick = () => document.getElementById('edit-dialog').close();
   document.getElementById('edit-save').onclick = saveConnection;
+  document.getElementById('edit-secret-eye').onclick = () => {
+    const input = document.getElementById('edit-secret');
+    const eye = document.getElementById('edit-secret-eye');
+    const show = input.type === 'password';
+    input.type = show ? 'text' : 'password';
+    eye.textContent = show ? '🙈' : '👁';
+  };
   document.getElementById('policy-cancel').onclick = () => document.getElementById('policy-dialog').close();
   document.getElementById('policy-save').onclick = savePolicy;
   document.getElementById('policy-add').onclick = addStatement;
@@ -583,7 +592,6 @@ async function boot() {
     applyTheme();
     await refresh();
     await initLocal();
-    toggleCrumbs(localStorage.getItem('ossmanager.crumbs') === '1');
   } catch (err) { setStatus('启动失败：' + err, true); }
 }
 
@@ -818,14 +826,12 @@ function updateFooter(extra) {
 
 function renderEntries() {
   const crumbs = document.getElementById('crumbs');
-  crumbs.style.display = state.crumbsVisible ? 'flex' : 'none';
-  const tools = document.getElementById('list-tools');
-  if (tools) tools.style.display = state.active ? 'flex' : 'none';
+  crumbs.style.display = state.active ? 'flex' : 'none';
   applyWindowTitle();
   if (!state.active) {
     const stat = document.getElementById('filter-stat');
     if (stat) stat.textContent = '';
-    crumbs.innerHTML = '<span>开始使用</span>';
+    document.getElementById('crumb-nav').innerHTML = '<span>开始使用</span>';
     document.getElementById('entries').innerHTML = `
       <div class="welcome">
         <h2>开始使用</h2>
@@ -846,20 +852,12 @@ function renderEntries() {
     const target = parts.slice(0, index + 1).join('/');
     trail += ` / <a href="#" data-path="${esc(target)}">${esc(part)}</a>`;
   });
-  const connection = state.connections.find((c) => c.name === state.active);
-  const base = connection && connection.endpoint ? connection.endpoint.replace(/\/$/, '') : '';
-  const absPath = base ? base + (state.path ? '/' + state.path : '') : '';
-  crumbs.innerHTML = `<a href="#" id="go-up">↑ 上级</a><span class="trail">${trail}</span><span class="abs" title="${esc(absPath)}">${esc(absPath)}</span>`;
+  const nav = document.getElementById('crumb-nav');
+  nav.innerHTML = `<a href="#" id="go-up">↑ 上级</a><span class="trail">${trail}</span>`;
   document.getElementById('go-up').onclick = (e) => { e.preventDefault(); goUp(); };
-  crumbs.querySelectorAll('a[data-path]').forEach((link) => {
+  nav.querySelectorAll('a[data-path]').forEach((link) => {
     link.onclick = (e) => { e.preventDefault(); state.path = link.dataset.path; state.selected = null; clearFilter(); loadEntries(); };
   });
-  const absEl = crumbs.querySelector('.abs');
-  if (absEl && absPath) {
-    absEl.style.cursor = 'pointer';
-    absEl.title = '点击复制绝对路径';
-    absEl.onclick = () => { api().SetClipboard(absPath); notify('已复制绝对路径：' + absPath); };
-  }
 
   const host = document.getElementById('entries');
   const keyword = state.filter.trim().toLowerCase();
@@ -875,8 +873,8 @@ function renderEntries() {
   const arrow = (key) => (state.sort.key === key ? (state.sort.dir > 0 ? ' ▲' : ' ▼') : '');
   const rows = visible.map((en) => {
     const ops = en.isDir
-      ? '<button data-op="enter" title="进入">📂</button><button data-op="size" title="统计占用">📊</button>'
-      : '<button data-op="preview" title="预览">👁</button><button data-op="download" title="下载">⬇</button><button data-op="info" title="属性">ℹ</button><button data-op="link" title="复制下载链接">🔗</button>';
+      ? '<button data-op="size" title="统计占用">📊</button>'
+      : '<button data-op="preview" title="预览">👁</button><button data-op="download" title="下载">⬇</button><button data-op="tolocal" title="下载到本地栏">⇥</button><button data-op="info" title="属性">ℹ</button>';
     const cls = en.isDir ? 'dir' : 'file';
     const icon = en.isDir ? '📁' : '📄';
     const size = en.isDir ? (en.sizeComputed ? fmtSize(en.size) : '') : fmtSize(en.size);
@@ -954,6 +952,7 @@ function renderEntries() {
         else if (op === 'size') showSize(remotePath);
         else if (op === 'preview') previewEntry(remotePath);
         else if (op === 'download') downloadEntry(name);
+        else if (op === 'tolocal') downloadEntryToLocal(name);
         else if (op === 'info') showInfo(remotePath);
         else if (op === 'link') copyLink(remotePath);
       };
@@ -972,6 +971,7 @@ function renderEntries() {
         items.push({ label: '进入', action: () => enterDir(name) });
         items.push({ label: '统计占用…', action: () => showSize(remotePath) });
         items.push({ label: '下载目录…', action: () => downloadFolder(remotePath) });
+        items.push({ label: '下载目录到本地栏', action: () => downloadFolderToLocal(remotePath) });
         if (!state.path) {
           items.push({ separator: true });
           items.push({ label: '编辑桶策略…', action: () => openPolicy(name) });
@@ -980,6 +980,7 @@ function renderEntries() {
       } else {
         items.push({ label: '预览', action: () => previewEntry(remotePath) });
         items.push({ label: '下载…', action: () => downloadEntry(name) });
+        items.push({ label: '下载到本地栏', action: () => downloadEntryToLocal(name) });
         items.push({ label: '编辑文本…', action: () => editText(remotePath) });
         items.push({ separator: true });
         items.push({ label: '复制下载链接（7 天）', action: () => copyLink(remotePath) });
@@ -1095,14 +1096,6 @@ function renderLocalCrumbs() {
 async function editLocalPath() {
   const value = await askInput('本地路径（支持 \\\\服务器\\共享）', state.local.path || '');
   if (value) navigateLocal(value);
-}
-
-function toggleCrumbs(force) {
-  const visible = force === undefined ? !state.crumbsVisible : force;
-  state.crumbsVisible = visible;
-  const node = document.getElementById('crumbs');
-  if (node) node.style.display = visible ? 'flex' : 'none';
-  localStorage.setItem('ossmanager.crumbs', visible ? '1' : '0');
 }
 
 // bindResizers 让连接栏与本地栏的宽度可以拖动调整。
@@ -1300,6 +1293,11 @@ async function unmountActive() {
 function openEdit(name) {
   state.editing = name || null;
   document.getElementById('edit-title').textContent = name ? '编辑连接' : '新建连接';
+  // 密钥默认为隐藏，并清空上次残留值。
+  const secretInput = document.getElementById('edit-secret');
+  secretInput.type = 'password';
+  secretInput.value = '';
+  document.getElementById('edit-secret-eye').textContent = '👁';
   const fields = { 'edit-name': '', 'edit-display': '', 'edit-endpoint': '', 'edit-account': '', 'edit-secret': '', 'edit-region': '' };
   if (name) {
     api().GetConnection(name).then((def) => {
@@ -1576,6 +1574,28 @@ async function downloadEntry(name) {
   setStatus('正在下载 ' + name + ' …');
   try { const local = await api().Download(remotePath, dir); notify('已下载到 ' + local); }
   catch (err) { setStatus('下载失败：' + err, true); }
+}
+
+// 直接下载到左侧本地栏当前目录，不弹目录选择框。
+async function downloadEntryToLocal(name) {
+  if (!state.local.visible) { notify('请先打开本地栏', true); return; }
+  const remotePath = state.active + ':' + (state.path ? state.path + '/' : '') + name;
+  setStatus('正在下载到 ' + state.local.path + ' …');
+  try {
+    const local = await api().Download(remotePath, state.local.path);
+    await navigateLocal(state.local.path);
+    notify('已下载到 ' + local);
+  } catch (err) { notify('下载失败：' + err, true); }
+}
+
+async function downloadFolderToLocal(remotePath) {
+  if (!state.local.visible) { notify('请先打开本地栏', true); return; }
+  setStatus('正在下载目录到 ' + state.local.path + ' …');
+  try {
+    await api().DownloadFolder(remotePath, state.local.path);
+    await navigateLocal(state.local.path);
+    notify('目录已下载到 ' + state.local.path);
+  } catch (err) { notify('下载失败：' + err, true); }
 }
 
 async function uploadPaths(paths) {
@@ -1858,25 +1878,29 @@ async function refreshDownloadList() {
   items.sort((left, right) => String(right.time).localeCompare(String(left.time)));
   const host = document.getElementById('download-list');
   if (!items.length) { host.innerHTML = '<div class="empty">还没有下载记录</div>'; return; }
-  host.innerHTML = items.map((item) => {
-    const badge = item.status === 'running'
-      ? `<span class="badge">下载中 ${item.percent}%</span>`
-      : item.status === 'error'
-        ? '<span class="badge error">失败</span>'
-        : '<span class="badge done">已完成</span>';
-    const detail = [item.size, item.speed, item.elapsed].filter(Boolean).join(' · ');
+  const rows = items.map((item) => {
+    const status = item.status === 'running'
+      ? `下载中 ${item.percent}%`
+      : item.status === 'error' ? '失败' : '已完成';
+    const badgeClass = item.status === 'running' ? '' : item.status === 'error' ? ' error' : ' done';
     const bar = item.status === 'running'
       ? `<div class="hbar"><div class="hfill" style="width:${item.percent}%"></div></div>`
       : '';
-    const note = item.error ? ' · ' + esc(item.error) : '';
-    return `<div class="hline" data-path="${esc(item.localPath)}">
-      <div class="hname" title="${esc(item.remote || item.name)}">${esc(item.name)} ${badge}</div>
-      ${bar}
-      <div class="hmeta">${esc(item.time)}${detail ? ' · ' + esc(detail) : ''}${note}</div>
-      <div class="hpath" title="${esc(item.localPath)}">${esc(item.localPath)}</div>
-    </div>`;
+    const detail = [item.speed, item.elapsed].filter(Boolean).join(' · ');
+    const error = item.error ? `<div class="herr" title="${esc(item.error)}">${esc(item.error)}</div>` : '';
+    return `<tr class="hrow" data-path="${esc(item.localPath)}">
+      <td class="hname" title="${esc(item.remote || item.name)}">${esc(item.name)}${bar}${error}</td>
+      <td class="hstatus"><span class="badge${badgeClass}">${status}</span></td>
+      <td class="hsize">${esc(item.size)}${detail ? `<div class="hdetail">${esc(detail)}</div>` : ''}</td>
+      <td class="htime">${esc(item.time)}</td>
+      <td class="hpath" title="${esc(item.localPath)}">${esc(item.localPath)}</td>
+    </tr>`;
   }).join('');
-  host.querySelectorAll('.hline').forEach((node) => {
+  host.innerHTML = `<table class="history-table">
+    <colgroup><col style="width:220px"><col style="width:90px"><col style="width:170px"><col style="width:150px"><col style="width:200px"></colgroup>
+    <thead><tr><th>名称</th><th>状态</th><th>大小 / 速度</th><th>时间</th><th>本地路径</th></tr></thead>
+    <tbody>${rows}</tbody></table>`;
+  host.querySelectorAll('.hrow').forEach((node) => {
     const path = node.dataset.path;
     if (!path) return;
     node.oncontextmenu = (e) => {

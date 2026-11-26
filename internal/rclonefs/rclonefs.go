@@ -52,7 +52,7 @@ func List(ctx context.Context, confPath, remote string) ([]Entry, error) {
 	if err := ensureConfig(confPath); err != nil {
 		return nil, err
 	}
-	f, err := fs.NewFs(ctx, remote)
+	f, err := NewFs(ctx, confPath, remote)
 	if err != nil {
 		return nil, err
 	}
@@ -91,9 +91,9 @@ func splitPath(remotePath string) (string, string) {
 	return remotePath[:index], remotePath[index+1:]
 }
 
-func objectOf(ctx context.Context, remotePath string) (fs.Fs, fs.Object, error) {
+func objectOf(ctx context.Context, confPath, remotePath string) (fs.Fs, fs.Object, error) {
 	parent, name := splitPath(remotePath)
-	f, err := fs.NewFs(ctx, parent)
+	f, err := NewFs(ctx, confPath, parent)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -109,7 +109,7 @@ func Mkdir(ctx context.Context, confPath, remoteDir string) error {
 	if err := ensureConfig(confPath); err != nil {
 		return err
 	}
-	f, err := fs.NewFs(ctx, remoteDir)
+	f, err := NewFs(ctx, confPath, remoteDir)
 	if err != nil {
 		return err
 	}
@@ -121,12 +121,12 @@ func Move(ctx context.Context, confPath, oldPath, newPath string) error {
 	if err := ensureConfig(confPath); err != nil {
 		return err
 	}
-	_, src, err := objectOf(ctx, oldPath)
+	_, src, err := objectOf(ctx, confPath, oldPath)
 	if err != nil {
 		return err
 	}
 	parent, name := splitPath(newPath)
-	dstFs, err := fs.NewFs(ctx, parent)
+	dstFs, err := NewFs(ctx, confPath, parent)
 	if err != nil {
 		return err
 	}
@@ -140,13 +140,13 @@ func Delete(ctx context.Context, confPath, remotePath string, isDir bool) error 
 		return err
 	}
 	if isDir {
-		f, err := fs.NewFs(ctx, remotePath)
+		f, err := NewFs(ctx, confPath, remotePath)
 		if err != nil {
 			return err
 		}
 		return operations.Purge(ctx, f, "")
 	}
-	_, obj, err := objectOf(ctx, remotePath)
+	_, obj, err := objectOf(ctx, confPath, remotePath)
 	if err != nil {
 		return err
 	}
@@ -158,7 +158,7 @@ func Size(ctx context.Context, confPath, remotePath string) (int64, int64, error
 	if err := ensureConfig(confPath); err != nil {
 		return 0, 0, err
 	}
-	f, err := fs.NewFs(ctx, remotePath)
+	f, err := NewFs(ctx, confPath, remotePath)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -171,7 +171,7 @@ func ObjectInfo(ctx context.Context, confPath, remotePath string) (map[string]st
 	if err := ensureConfig(confPath); err != nil {
 		return nil, err
 	}
-	_, obj, err := objectOf(ctx, remotePath)
+	_, obj, err := objectOf(ctx, confPath, remotePath)
 	if err != nil {
 		return nil, err
 	}

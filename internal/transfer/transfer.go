@@ -17,6 +17,7 @@ import (
 	"github.com/rclone/rclone/fs/config"
 	"github.com/rclone/rclone/fs/config/configfile"
 	"github.com/rclone/rclone/fs/operations"
+	"OssManager/internal/rclonefs"
 	rwalk "github.com/rclone/rclone/fs/walk"
 )
 
@@ -58,7 +59,7 @@ func DownloadFolder(ctx context.Context, confPath, remoteDir, localDir string) e
 	if err := os.MkdirAll(localDir, 0o755); err != nil {
 		return err
 	}
-	srcFs, err := fs.NewFs(ctx, remoteDir)
+	srcFs, err := rclonefs.NewFs(ctx, confPath, remoteDir)
 	if err != nil {
 		return err
 	}
@@ -109,7 +110,7 @@ func Download(ctx context.Context, confPath, remotePath, localDir string) (strin
 	if name == "" {
 		return "", os.ErrInvalid
 	}
-	srcFs, err := fs.NewFs(ctx, parent)
+	srcFs, err := rclonefs.NewFs(ctx, confPath, parent)
 	if err != nil {
 		return "", err
 	}
@@ -143,7 +144,7 @@ func Upload(ctx context.Context, confPath, localPath, remoteDir string) error {
 	if err != nil {
 		return err
 	}
-	dstFs, err := fs.NewFs(ctx, remoteDir)
+	dstFs, err := rclonefs.NewFs(ctx, confPath, remoteDir)
 	if err != nil {
 		return err
 	}
