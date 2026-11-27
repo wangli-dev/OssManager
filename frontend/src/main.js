@@ -16,7 +16,6 @@ const state = {
   local: { path: '', entries: [], drives: [], visible: true },
   filter: '',
   sort: { key: 'name', dir: 1 },
-  nameWidth: 320,
   connCollapsed: false,
   view: 'remote',
   localTab: null,
@@ -25,6 +24,7 @@ const state = {
   home: '',
   treeVisible: false,
   favorites: [],
+  favOpen: true,
   connSelected: '',
 };
 
@@ -130,6 +130,7 @@ function restoreSession() {
   }
   renderTabs();
   renderConnections();
+  syncTree();
   if (state.view === 'local') { loadLocalView(state.localView.path); return true; }
   if (state.active) { loadEntries(); return true; }
   return false;
@@ -155,7 +156,8 @@ function bindWindowSize() {
         const h = size ? size.h : window.outerHeight;
         localStorage.setItem(WINDOW_KEY, JSON.stringify({ w, h }));
       } catch (err) { /* 忽略 */ }
-    }, 500);
+      scheduleEntryLayout();
+    }, 350);
   });
 }
 
@@ -458,9 +460,30 @@ function connLabel(name) {
 // ===== 文件列表栏：标题、筛选、排序与列宽 =====
 const COL_CHECK = 24, COL_SIZE = 80, COL_TIME = 150, COL_OPS = 130, COL_NAME_MIN = 120, COL_NAME_MAX = 900;
 
-function loadNameWidth() {
-  const saved = parseInt(localStorage.getItem('ossmanager.nameWidth') || '', 10);
-  return saved >= COL_NAME_MIN && saved <= COL_NAME_MAX ? saved : 320;
+// 名称列按内容自适应：内容放得下时填满剩余空间，放不下时按最长名称展开并出现横向滚动条。
+const measureCanvas = document.createElement('canvas');
+const measureContext = measureCanvas.getContext('2d');
+function measureNameWidth(entries) {
+  const font = '13px "Microsoft YaHei UI", "Segoe UI", sans-serif';
+  if (measureContext) measureContext.font = font;
+  let longest = measureContext ? measureContext.measureText('名称').width : 40;
+  entries.forEach((entry) => {
+    const width = measureContext
+      ? measureContext.measureText(String(entry.name)).width
+      : String(entry.name).length * 7;
+    if (width > longest) longest = width;
+  });
+  // 图标 + 单元格内边距 + 少量余量。
+  return Math.ceil(longest) + 52;
+}
+function computeNameWidth(entries) {
+  const container = document.getElementById('entries');
+  const available = container ? Math.max(0, container.clientWidth - 2) : 0;
+  const fixed = COL_CHECK + COL_SIZE + COL_TIME + COL_OPS;
+  const measured = Math.min(COL_NAME_MAX, Math.max(COL_NAME_MIN, measureNameWidth(entries)));
+  const fill = available > fixed ? available - fixed : 0;
+  const width = Math.min(COL_NAME_MAX, Math.max(COL_NAME_MIN, measured, fill));
+  return { width, tableWidth: Math.max(available, width + fixed) };
 }
 
 function clearFilter() {
@@ -495,31 +518,6 @@ function sortEntries(list) {
   });
 }
 
-// 拖动名称列右边缘调整列宽，其余列固定宽度并允许表格横向滚动。
-function startNameResize(e) {
-  e.preventDefault();
-  e.stopPropagation();
-  const startX = e.clientX;
-  const startWidth = loadNameWidth();
-  const table = document.querySelector('#entries table');
-  const move = (event) => {
-    const width = Math.max(COL_NAME_MIN, Math.min(COL_NAME_MAX, startWidth + event.clientX - startX));
-    state.nameWidth = width;
-    if (!table) return;
-    const col = table.querySelector('col');
-    if (col) col.style.width = width + 'px';
-    table.style.width = `max(100%, ${width + COL_CHECK + COL_SIZE + COL_TIME + COL_OPS}px)`;
-  };
-  const up = () => {
-    document.removeEventListener('mousemove', move);
-    document.removeEventListener('mouseup', up);
-    localStorage.setItem('ossmanager.nameWidth', String(state.nameWidth || startWidth));
-  };
-  document.addEventListener('mousemove', move);
-  document.addEventListener('mouseup', up);
-}
-
-// 把 rclone/底层错误翻译成人话；匹配不到时返回空串，由界面显示原始错误。
 function describeError(raw) {
   const low = String(raw || '').toLowerCase();
   if (/unable to authenticate|permission denied \(publickey|auth fail|ssh: auth|wrong password|bad password/.test(low)) return '认证失败：账号、密码或密钥不正确（SFTP 密钥登录请检查 key_file 路径与格式）';
@@ -656,6 +654,7 @@ function renderShell() {
       <div class="header-right">
         <span id="speed-indicator" class="speed" style="display:none" title="当前上传 / 下载速度"></span>
         <button id="update-install" class="primary update-ready" style="display:none" title="下载完成，重启并安装">重启安装</button>
+        <button id="btn-fav-menu" class="chip" title="收藏夹">${ICONS.star}<span>收藏夹</span></button>
         <button id="btn-autosize" class="chip" title="自动统计目录占用：关">统计占用</button>
         <button id="btn-transfer" title="传输记录">传输记录</button>
         <button id="btn-more">更多 ▾</button>
@@ -666,7 +665,7 @@ function renderShell() {
       <aside id="conn-pane">
         <div class="list-head"><span class="list-title">连接</span><span class="list-tools-inline"><button id="btn-refresh" title="刷新连接列表">${ICONS.refresh}</button></span></div>
         <div id="connections"></div>
-        <div class="fav-head" id="fav-head" style="display:none"><span>收藏</span></div>
+        <div class="fav-head" id="fav-head" style="display:none"></div>
         <div id="favorites" style="display:none"></div>
         <div id="conn-handle" class="conn-handle" title="收起连接栏">‹</div>
       </aside>
@@ -674,6 +673,7 @@ function renderShell() {
       <aside id="tree-pane" style="display:none">
         <div class="list-head"><span class="list-title">目录树</span><span class="list-tools-inline"><button id="tree-refresh" title="刷新目录树">${ICONS.refresh}</button><button id="tree-close" title="关闭目录树">${ICONS.close}</button></span></div>
         <div id="tree-body"></div>
+        <div id="tree-resizer" class="tree-resizer" title="拖动调整目录树宽度"></div>
       </aside>
       <section class="files">
         <div class="tabbar">
@@ -775,11 +775,13 @@ function renderShell() {
         <option value="last">上次关闭时的画面</option>
       </select>
       <h3>连接与文件</h3>
-      <label>连接配置文件</label><input id="set-config" />
-      <label>文件管理器（留空自动探测）</label><input id="set-filemanager" />
+      <label>连接配置文件</label>
+      <div class="input-row"><input id="set-config" /><button id="set-config-pick" class="icon-btn" title="选择文件">${ICONS.folderOpen}</button></div>
+      <label>文件管理器（留空自动探测）</label>
+      <div class="input-row"><input id="set-filemanager" /><button id="set-filemanager-pick" class="icon-btn" title="选择文件">${ICONS.folderOpen}</button></div>
       <h3>缓存</h3>
       <div class="row">
-        <div><label>缓存目录</label><input id="set-cache-dir" /></div>
+        <div><label>缓存目录</label><div class="input-row"><input id="set-cache-dir" /><button id="set-cache-dir-pick" class="icon-btn" title="选择目录">${ICONS.folder}</button></div></div>
         <div><label>目录缓存时长</label><input id="set-dir-cache" /></div>
       </div>
       <div class="row">
@@ -798,7 +800,8 @@ function renderShell() {
         <option value="shell">拖到资源管理器（复制落盘）</option>
       </select>
       <h3>传输与目录统计</h3>
-      <label>默认下载目录（留空则每次询问）</label><input id="set-download-dir" placeholder="例如 D:\Downloads" />
+      <label>默认下载目录（留空则每次询问）</label>
+      <div class="input-row"><input id="set-download-dir" placeholder="例如 D:\Downloads" /><button id="set-download-dir-pick" class="icon-btn" title="选择目录">${ICONS.folder}</button></div>
       <label class="chk"><input type="checkbox" id="set-autosize" /> 自动统计目录大小</label>
       <div class="row">
         <div><label>打开目录后延迟（秒）</label><input id="set-autosize-delay" type="number" min="0" max="60" /></div>
@@ -938,10 +941,20 @@ function renderShell() {
     <dialog id="preview-dialog" class="preview">
       <h2><span id="preview-title">预览</span><button id="preview-x" class="dialog-x" title="关闭">${ICONS.close}</button></h2>
       <div id="preview-body" class="preview-body"></div>
+      <div id="preview-meta" class="preview-meta"></div>
       <div class="footer">
         <button id="preview-copy">复制地址</button>
         <button id="preview-system">用系统程序打开</button>
         <button id="preview-close" class="primary">关闭</button>
+      </div>
+    </dialog>
+    <dialog id="update-dialog" class="update">
+      <h2><span id="update-title">发现新版本</span><button id="update-x" class="dialog-x" title="关闭">${ICONS.close}</button></h2>
+      <p id="update-sub" class="hint"></p>
+      <div id="update-notes" class="update-notes"></div>
+      <div class="footer">
+        <button id="update-later">稍后</button>
+        <button id="update-now" class="primary">重启并安装</button>
       </div>
     </dialog>
     <dialog id="confirm-dialog" class="confirm">
@@ -964,11 +977,20 @@ function renderShell() {
   };
   document.getElementById('conn-add').onclick = (e) => { e.stopPropagation(); openEdit(null); };
   document.getElementById('share-add').onclick = (e) => { e.stopPropagation(); openNetDialog(); };
+  document.getElementById('btn-fav-menu').onclick = (e) => { e.stopPropagation(); openFavoritesMenu(e); };
   document.getElementById('btn-autosize').onclick = toggleAutoSize;
   document.getElementById('btn-transfer').onclick = openHistory;
   document.getElementById('update-install').onclick = installUpdate;
   document.getElementById('tree-close').onclick = () => toggleTree(false);
   document.getElementById('tree-refresh').onclick = () => { tree.key = ''; tree.nodes.clear(); syncTree(); };
+  const treeResizer = document.getElementById('tree-resizer');
+  if (treeResizer) treeResizer.onmousedown = startTreeResize;
+  const treePane = document.getElementById('tree-pane');
+  const treeWidth = localStorage.getItem('ossmanager.width.tree');
+  if (treePane && treeWidth) {
+    treePane.style.width = treeWidth;
+    treePane.style.flex = '0 0 ' + treeWidth;
+  }
   document.getElementById('conn-quick').onclick = (e) => {
     e.stopPropagation();
     toggleConnPopover();
@@ -1038,6 +1060,22 @@ function renderShell() {
   document.getElementById('set-export-bundle').onclick = exportBundle;
   document.getElementById('set-import-bundle').onclick = importBundle;
   document.getElementById('set-check-update').onclick = () => checkUpdate(false);
+  document.getElementById('set-config-pick').onclick = async () => {
+    const path = await api().PickFile();
+    if (path) document.getElementById('set-config').value = path;
+  };
+  document.getElementById('set-filemanager-pick').onclick = async () => {
+    const path = await api().PickFile();
+    if (path) document.getElementById('set-filemanager').value = path;
+  };
+  document.getElementById('set-cache-dir-pick').onclick = async () => {
+    const path = await api().PickFolder();
+    if (path) document.getElementById('set-cache-dir').value = path;
+  };
+  document.getElementById('set-download-dir-pick').onclick = async () => {
+    const path = await api().PickFolder();
+    if (path) document.getElementById('set-download-dir').value = path;
+  };
   document.getElementById('copy-x').onclick = closeCopyDialog;
   document.getElementById('copy-cancel').onclick = closeCopyDialog;
   document.getElementById('copy-up').onclick = copyUp;
@@ -1049,6 +1087,9 @@ function renderShell() {
   document.getElementById('preview-copy').onclick = copyPreviewAddress;
   document.getElementById('preview-system').onclick = openPreviewInSystem;
   document.getElementById('preview-dialog').addEventListener('close', cleanupPreview);
+  document.getElementById('update-x').onclick = () => document.getElementById('update-dialog').close();
+  document.getElementById('update-later').onclick = () => document.getElementById('update-dialog').close();
+  document.getElementById('update-now').onclick = applyUpdate;
   document.getElementById('settings-dialog').addEventListener('close', () => {
     const stateEl = document.getElementById('set-update-state');
     if (stateEl) stateEl.textContent = '';
@@ -1071,6 +1112,11 @@ async function boot() {
   try {
     state.settings = await api().GetSettings();
     loadFavorites();
+    // 兼容旧版本：此前隐藏过收藏栏（favHidden=1）时以收起抽屉的方式保留。
+    const savedFavOpen = localStorage.getItem('ossmanager.favOpen');
+    state.favOpen = savedFavOpen === null
+      ? localStorage.getItem('ossmanager.favHidden') !== '1'
+      : savedFavOpen === '1';
     applyTheme();
     await refresh();
     await initLocal();
@@ -1191,6 +1237,13 @@ function favoriteLabel(item) {
   return item.path ? `${label} / ${item.path}` : label;
 }
 
+// 收藏抽屉里用较短的名称，避免长路径被截断后无法区分；完整路径仍放在 title 中。
+function favoriteShortLabel(item) {
+  if (item.kind === 'local') return item.path || '此电脑';
+  const last = String(item.path || '').split('/').filter(Boolean).pop();
+  return connLabel(item.name) + ' / ' + (last || '根目录');
+}
+
 function isFavorite(item) {
   const key = favoriteKey(item);
   return state.favorites.some((fav) => favoriteKey(fav) === key);
@@ -1234,6 +1287,7 @@ function toggleFavoriteOf(item) {
   }
   saveFavorites();
   renderFavorites();
+  if (state.treeVisible) renderTree();
   updateFavoriteButton();
 }
 
@@ -1243,6 +1297,7 @@ function removeFavoriteById(id) {
   const [removed] = state.favorites.splice(index, 1);
   saveFavorites();
   renderFavorites();
+  if (state.treeVisible) renderTree();
   updateFavoriteButton();
   notify('已移除收藏：' + favoriteLabel(removed));
 }
@@ -1271,6 +1326,7 @@ function renderFavorites() {
   const host = document.getElementById('favorites');
   const head = document.getElementById('fav-head');
   if (!host || !head) return;
+  updateFavMenuButton();
   const visible = state.favorites.filter((item) => item.kind === 'local'
     || state.connections.some((connection) => connection.name === item.name));
   if (!visible.length) {
@@ -1280,10 +1336,18 @@ function renderFavorites() {
     return;
   }
   head.style.display = 'flex';
+  head.innerHTML = `<button id="fav-toggle" class="fav-toggle" title="${state.favOpen ? '收起收藏抽屉' : '展开收藏抽屉'}">
+      <span class="fav-star">${ICONS.starFill}</span>
+      <span>收藏</span>
+      <span class="fav-count">${visible.length}</span>
+      <span class="fav-chevron">${state.favOpen ? '▾' : '▸'}</span>
+    </button>`;
+  head.onclick = (e) => { if (e.target.closest('.fav-toggle')) setFavoritesOpen(!state.favOpen); };
   host.style.display = '';
+  host.classList.toggle('collapsed', !state.favOpen);
   host.innerHTML = visible.map((item) => `<div class="fav" data-fav="${esc(item.id)}" title="${esc(favoriteLabel(item))}">
       <span class="fav-star">${ICONS.starFill}</span>
-      <span class="fav-name">${esc(favoriteLabel(item))}</span>
+      <span class="fav-name">${esc(favoriteShortLabel(item))}</span>
       <button class="fav-remove" data-remove="${esc(item.id)}" title="移除收藏">${ICONS.close}</button>
     </div>`).join('');
   host.querySelectorAll('.fav').forEach((row) => {
@@ -1306,6 +1370,46 @@ function renderFavorites() {
     const remove = row.querySelector('.fav-remove');
     if (remove) remove.onclick = (e) => { e.stopPropagation(); removeFavoriteById(item.id); };
   });
+}
+
+// 顶部「收藏夹」菜单：快速打开收藏，并可显示/隐藏连接栏底部的收藏区。
+function openFavoritesMenu(event) {
+  const rect = event.currentTarget.getBoundingClientRect();
+  const items = [];
+  const visible = state.favorites.filter((item) => item.kind === 'local'
+    || state.connections.some((connection) => connection.name === item.name));
+  if (visible.length) {
+    items.push({ header: true, label: '收藏夹' });
+    visible.forEach((item) => items.push({ label: favoriteLabel(item), action: () => openFavorite(item) }));
+  } else {
+    items.push({ label: '还没有收藏，可在路径栏或目录树点星标添加' });
+  }
+  items.push({ separator: true });
+  const current = currentFavoriteItem();
+  if (current) {
+    items.push({ label: isFavorite(current) ? '取消收藏当前目录' : '收藏当前目录', action: toggleFavorite });
+  }
+  if (visible.length) {
+    items.push({
+      label: state.favOpen ? '收起收藏抽屉' : '展开收藏抽屉',
+      action: () => setFavoritesOpen(!state.favOpen),
+    });
+  }
+  showMenu(rect.left, rect.bottom + 4, items);
+}
+
+// 收藏抽屉：标题栏常驻，列表区域在展开/收起之间过渡。
+function setFavoritesOpen(open) {
+  state.favOpen = !!open;
+  localStorage.setItem('ossmanager.favOpen', state.favOpen ? '1' : '0');
+  renderFavorites();
+  updateFavMenuButton();
+}
+
+function updateFavMenuButton() {
+  const button = document.getElementById('btn-fav-menu');
+  if (!button) return;
+  button.classList.toggle('active', state.favOpen && state.favorites.length > 0);
 }
 
 function connectionListHTML() {
@@ -1468,6 +1572,7 @@ function applyConnCollapsed() {
   if (collapsed) toggleConnPopover(false);
   localStorage.setItem('ossmanager.connCollapsed', collapsed ? '1' : '0');
   renderConnQuick();
+  scheduleEntryLayout();
 }
 
 async function selectConnection(name) {
@@ -1579,8 +1684,7 @@ function renderLocalView() {
   const entries = state.localView.entries;
   const visible = entries.filter((entry) => !keyword || String(entry.name).toLowerCase().includes(keyword));
   if (stat) stat.textContent = keyword ? `筛选 ${visible.length} / 共 ${entries.length} 项` : '';
-  const nameWidth = loadNameWidth();
-  const totalWidth = nameWidth + COL_CHECK + COL_SIZE + COL_TIME + COL_OPS;
+  const { width: nameWidth, tableWidth } = computeNameWidth(visible);
   const rows = visible.map((entry, index) => {
     const full = joinLocal(state.localView.path, entry.name);
     const icon = entry.isDir ? ICONS.folder : ICONS.file;
@@ -1596,7 +1700,7 @@ function renderLocalView() {
     </tr>`;
   }).join('');
   const body = rows || `<tr><td colspan="5" class="empty">${keyword ? '没有匹配的条目' : '空目录'}</td></tr>`;
-  host.innerHTML = `<table style="width:max(100%, ${totalWidth}px)">
+  host.innerHTML = `<table style="width:${tableWidth}px">
     <colgroup><col style="width:${COL_CHECK}px"><col style="width:${nameWidth}px"><col style="width:${COL_SIZE}px"><col style="width:${COL_TIME}px"><col style="width:${COL_OPS}px"></colgroup>
     <thead><tr><th class="check"><input type="checkbox" id="local-select-all" title="全选当前列表" /></th><th class="name">名称</th><th class="size">大小</th><th class="time">修改时间</th><th class="ops">操作</th></tr></thead>
     <tbody>${body}</tbody></table>`;
@@ -1891,8 +1995,7 @@ function renderEntries() {
   if (stat) stat.textContent = keyword ? `筛选 ${visible.length} / 共 ${state.entries.length} 项` : '';
   if (!state.entries.length) { host.innerHTML = '<div class="empty">此位置没有对象</div>'; return; }
 
-  const nameWidth = loadNameWidth();
-  const totalWidth = nameWidth + COL_CHECK + COL_SIZE + COL_TIME + COL_OPS;
+  const { width: nameWidth, tableWidth } = computeNameWidth(visible);
   const arrow = (key) => (state.sort.key === key ? (state.sort.dir > 0 ? ' ▲' : ' ▼') : '');
   const rows = visible.map((en, index) => {
     const ops = en.isDir
@@ -1911,11 +2014,11 @@ function renderEntries() {
     </tr>`;
   }).join('');
   const body = rows || `<tr><td colspan="5" class="empty">没有匹配「${esc(state.filter.trim())}」的条目</td></tr>`;
-  host.innerHTML = `<table style="width:max(100%, ${totalWidth}px)">
+  host.innerHTML = `<table style="width:${tableWidth}px">
     <colgroup><col style="width:${COL_CHECK}px"><col style="width:${nameWidth}px"><col style="width:${COL_SIZE}px"><col style="width:${COL_TIME}px"><col style="width:${COL_OPS}px"></colgroup>
     <thead><tr>
       <th class="check"><input type="checkbox" id="select-all" title="全选当前列表" /></th>
-      <th class="name sortable" data-sort="name">名称${arrow('name')}<span class="col-resizer" title="拖动调整名称列宽"></span></th>
+      <th class="name sortable" data-sort="name">名称${arrow('name')}</th>
       <th class="size sortable" data-sort="size">大小${arrow('size')}</th>
       <th class="time sortable" data-sort="time">修改时间${arrow('time')}</th>
       <th class="ops">操作</th>
@@ -1939,8 +2042,6 @@ function renderEntries() {
       renderEntries();
     };
   });
-  const resizer = host.querySelector('.col-resizer');
-  if (resizer) resizer.onmousedown = startNameResize;
   host.querySelectorAll('tr.row').forEach((row) => {
     row.draggable = true;
     row.ondragstart = (e) => {
@@ -2115,17 +2216,15 @@ function splitLocalPath(path) {
   return { base: value, rest: [] };
 }
 
-// localCrumbTrail 生成可点击的本地路径面包屑；盘符根目录由左侧下拉显示，不再重复。
+// localCrumbTrail 生成可点击的本地路径面包屑；根目录（盘符/共享）始终显示。
 function localCrumbTrail(path) {
   const { base, rest } = splitLocalPath(path);
-  const driveRoot = /^[A-Za-z]:[\\/]?$/.test(base);
   let accumulated = base;
   const segments = rest.map((part) => {
     accumulated = joinLocal(accumulated, part);
     return { name: part, path: accumulated };
   });
-  const links = [];
-  if (!driveRoot) links.push(crumbLink(base, base));
+  const links = [crumbLink(base, base, !segments.length)];
   if (segments.length > 4) {
     links.push('<a href="#" class="elide" id="local-crumb-elide" title="显示被省略的层级">…</a>');
     const tail = segments.slice(-2);
@@ -2136,7 +2235,6 @@ function localCrumbTrail(path) {
       links.push(crumbLink(segment.name, segment.path, index === segments.length - 1));
     });
   }
-  if (!links.length) links.push(crumbLink(base, base, true));
   return links.join('<span class="sep">/</span>');
 }
 
@@ -2418,11 +2516,14 @@ function treeNodeHTML(node, depth) {
   const children = node.expanded ? node.children.map((child) => treeNodeHTML(child, depth + 1)).join('') : '';
   const current = node.path === tree.current ? ' current' : '';
   const title = node.path || node.display;
+  const item = treeFavoriteItem(node);
+  const favOn = isFavorite(item);
   return `<div class="tree-node">
-    <div class="tree-row${current}" data-tree-path="${esc(node.path)}" style="padding-left:${8 + depth * 14}px">
+    <div class="tree-row${current}" data-tree-path="${esc(node.path)}" style="padding-left:${6 + depth * 11}px">
       <span class="tree-toggle">${marker}</span>
       <span class="tree-icon">${node.isDrive ? ICONS.drive : ICONS.folder}</span>
       <span class="tree-name" title="${esc(title)}">${esc(node.display)}</span>
+      <button class="tree-fav${favOn ? ' on' : ''}" data-tree-fav="1" title="${favOn ? '取消收藏' : '收藏此目录'}">${favOn ? ICONS.starFill : ICONS.star}</button>
     </div>${children}
   </div>`;
 }
@@ -2436,7 +2537,16 @@ function renderTree() {
   if (!root) { body.innerHTML = ''; return; }
   body.innerHTML = treeNodeHTML(root, 0);
   body.querySelectorAll('.tree-row').forEach((row) => {
-    row.onclick = (event) => { event.stopPropagation(); handleTreeRow(row, event); };
+    row.onclick = (event) => {
+      event.stopPropagation();
+      const node = tree.nodes.get(row.dataset.treePath);
+      if (!node) return;
+      if (event.target.closest('.tree-fav')) {
+        toggleFavoriteOf(treeFavoriteItem(node));
+        return;
+      }
+      handleTreeRow(row, event);
+    };
     row.oncontextmenu = (event) => {
       event.preventDefault();
       event.stopPropagation();
@@ -2550,6 +2660,7 @@ function toggleTree(force) {
   document.body.classList.toggle('tree-open', state.treeVisible);
   document.querySelectorAll('#btn-tree').forEach((node) => node.classList.toggle('active', state.treeVisible));
   if (state.treeVisible) syncTree();
+  scheduleEntryLayout();
 }
 
 // bindResizers 让连接栏宽度可以拖动调整。
@@ -2570,6 +2681,7 @@ function bindResizers() {
         document.removeEventListener('mousemove', move);
         document.removeEventListener('mouseup', up);
         localStorage.setItem('ossmanager.width.' + bar.dataset.target, pane.style.width);
+        scheduleEntryLayout();
       };
       document.addEventListener('mousemove', move);
       document.addEventListener('mouseup', up);
@@ -2586,6 +2698,38 @@ function restorePaneWidths() {
       pane.style.flex = '0 0 ' + saved;
     }
   });
+}
+
+// 目录树宽度拖动：把手叠在树与文件列表的接缝上，不额外占间距。
+function startTreeResize(event) {
+  event.preventDefault();
+  const pane = document.getElementById('tree-pane');
+  if (!pane) return;
+  const startX = event.clientX;
+  const startWidth = pane.getBoundingClientRect().width;
+  const move = (e) => {
+    const width = Math.max(160, Math.min(560, startWidth + e.clientX - startX));
+    pane.style.width = width + 'px';
+    pane.style.flex = '0 0 ' + width + 'px';
+  };
+  const up = () => {
+    document.removeEventListener('mousemove', move);
+    document.removeEventListener('mouseup', up);
+    localStorage.setItem('ossmanager.width.tree', pane.style.width);
+    scheduleEntryLayout();
+  };
+  document.addEventListener('mousemove', move);
+  document.addEventListener('mouseup', up);
+}
+
+// scheduleEntryLayout 在面板宽度变化后重新计算文件列表列宽。
+let entryLayoutTimer = null;
+function scheduleEntryLayout() {
+  clearTimeout(entryLayoutTimer);
+  entryLayoutTimer = setTimeout(() => {
+    if (state.view === 'local') renderLocalView();
+    else if (state.active) renderEntries();
+  }, 120);
 }
 
 function joinLocal(base, name) {
@@ -3028,9 +3172,53 @@ function showPreview(data, remotePath) {
     html = '<div class="empty">该类型暂不支持在线预览，可点击「用系统程序打开」。</div>';
   }
   body.innerHTML = html;
+  setPreviewMeta(data, remotePath);
   document.getElementById('preview-title').textContent = data.name;
   if (!dialog.open) dialog.showModal();
   notify('预览：' + data.name);
+}
+
+// setPreviewMeta 在预览内容下方展示名称、大小、类型与路径；媒体加载后再补充尺寸/时长。
+function setPreviewMeta(data, remotePath) {
+  const meta = document.getElementById('preview-meta');
+  if (!meta) return;
+  meta.innerHTML = `<span>大小：<b>${esc(fmtSize(data.size) || '未知')}</b></span>
+    <span>类型：<b>${esc(data.mime || '未知')}</b></span>
+    <span>路径：<b>${esc(remotePath)}</b></span>`;
+  const body = document.getElementById('preview-body');
+  const image = body.querySelector('img');
+  if (image) {
+    image.onload = () => appendPreviewMeta(`尺寸：<b>${image.naturalWidth} × ${image.naturalHeight}</b>`);
+  }
+  const video = body.querySelector('video');
+  if (video) {
+    video.onloadedmetadata = () => appendPreviewMeta(
+      `尺寸：<b>${video.videoWidth} × ${video.videoHeight}</b>`,
+      `时长：<b>${fmtDuration(video.duration)}</b>`,
+    );
+  }
+  const audio = body.querySelector('audio');
+  if (audio) {
+    audio.onloadedmetadata = () => appendPreviewMeta(`时长：<b>${fmtDuration(audio.duration)}</b>`);
+  }
+}
+
+function appendPreviewMeta(...items) {
+  const meta = document.getElementById('preview-meta');
+  if (!meta) return;
+  items.forEach((item) => {
+    const span = document.createElement('span');
+    span.innerHTML = item;
+    meta.appendChild(span);
+  });
+}
+
+function fmtDuration(seconds) {
+  const total = Math.max(0, Math.round(Number(seconds) || 0));
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  return h > 0 ? `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}` : `${m}:${String(s).padStart(2, '0')}`;
 }
 
 function cleanupPreview() {
@@ -3038,6 +3226,8 @@ function cleanupPreview() {
   previewState = null;
   const body = document.getElementById('preview-body');
   if (body) body.innerHTML = '';
+  const meta = document.getElementById('preview-meta');
+  if (meta) meta.innerHTML = '';
 }
 
 function copyPreviewAddress() {
@@ -3153,7 +3343,7 @@ async function checkUpdate(silent = false) {
       return;
     }
     notify('发现新版本 ' + info.latest + '，正在后台下载…');
-    await api().DownloadUpdate(info.url, info.latest);
+    await api().DownloadUpdate(info.url, info.latest, info.notes || '');
     await refreshUpdateState();
     notify('新版本 ' + info.latest + ' 已下载，点击右上角「重启安装」完成更新');
   } catch (err) {
@@ -3181,13 +3371,17 @@ async function refreshUpdateState() {
 async function installUpdate() {
   const stateValue = await api().GetUpdateState();
   if (!stateValue.ready) { notify('还没有下载好的更新', true); return; }
-  const result = await showConfirm({
-    title: '重启并安装更新',
-    text: '将关闭程序并替换为 ' + stateValue.version + '，完成后自动重新打开。正在进行的传输会中断。',
-    okText: '重启并安装',
-    okDanger: false,
-  });
-  if (!result.ok) return;
+  document.getElementById('update-title').textContent = '发现新版本 ' + stateValue.version;
+  document.getElementById('update-sub').textContent = '当前 ' + (stateValue.current || '') + '，下载已完成；重启后自动安装，正在进行的传输会中断。';
+  const notes = String(stateValue.notes || '').trim();
+  document.getElementById('update-notes').textContent = notes || '该版本没有提供更新说明。';
+  document.getElementById('update-dialog').showModal();
+}
+
+async function applyUpdate() {
+  const stateValue = await api().GetUpdateState();
+  if (!stateValue.ready) { notify('还没有下载好的更新', true); return; }
+  document.getElementById('update-dialog').close();
   try { await api().ApplyUpdate(); }
   catch (err) { notify('安装失败：' + err, true); }
 }

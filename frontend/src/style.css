@@ -262,16 +262,6 @@ th.check input, td.check input { width: 13px; height: 13px; margin: 0; cursor: p
 th { color: var(--muted); font-weight: 500; position: sticky; top: 0; background: var(--card); }
 th.sortable { cursor: pointer; user-select: none; }
 th.sortable:hover { color: var(--text); }
-.col-resizer {
-  position: absolute;
-  top: 0;
-  right: -4px;
-  width: 9px;
-  height: 100%;
-  cursor: col-resize;
-  z-index: 2;
-}
-.col-resizer:hover { background: var(--accent-soft); }
 td.size, th.size { text-align: center; width: 80px; }
 td.time, th.time { text-align: center; width: 150px; color: var(--muted); }
 td.ops, th.ops { text-align: center; width: 130px; white-space: nowrap; }
@@ -983,13 +973,47 @@ tr.file .icon { color: var(--muted); }
 .fav-head {
   display: flex;
   align-items: center;
+  padding: 0;
+  border-top: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+.fav-toggle {
+  width: 100%;
+  display: flex;
+  align-items: center;
   gap: 6px;
-  padding: 6px 12px 2px;
+  border: 0;
+  background: transparent;
   color: var(--muted);
   font-size: 12px;
-  border-top: 1px solid var(--border);
+  padding: 7px 12px;
+  border-radius: 0;
+  text-align: left;
 }
-#favorites { flex: 0 1 auto; max-height: 168px; overflow: auto; padding: 0 6px 8px; }
+.fav-toggle:hover { background: var(--accent-soft); color: var(--text); }
+.fav-head .fav-star { color: #e5a400; display: inline-flex; }
+.fav-count {
+  background: var(--accent-soft);
+  color: var(--accent-text);
+  border-radius: 8px;
+  padding: 0 6px;
+  font-size: 11px;
+}
+.fav-chevron { margin-left: auto; color: var(--muted); }
+#favorites {
+  flex: 0 1 auto;
+  max-height: 168px;
+  overflow: auto;
+  padding: 0 6px 8px;
+  transition: max-height 0.18s ease, opacity 0.18s ease, padding 0.18s ease;
+}
+#favorites.collapsed {
+  max-height: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+  opacity: 0;
+  overflow: hidden;
+}
 .fav {
   display: flex;
   align-items: center;
@@ -1015,3 +1039,113 @@ tr.file .icon { color: var(--muted); }
 }
 .fav .fav-remove:hover { color: var(--danger); background: color-mix(in srgb, var(--danger) 14%, transparent); }
 .fav .fav-remove .svg-icon { width: 10px; height: 10px; }
+
+/* ===== 目录树：紧凑缩进、行内收藏星标、宽度拖动 ===== */
+#tree-pane { position: relative; }
+.tree-row { padding-right: 2px; }
+.tree-toggle { width: 12px; flex: 0 0 12px; }
+.tree-name { flex: 1; }
+.tree-fav {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  opacity: 0;
+}
+.tree-fav .svg-icon { width: 11px; height: 11px; }
+.tree-row:hover .tree-fav, .tree-fav.on { opacity: 1; }
+.tree-fav:hover { background: var(--accent-soft); color: #e5a400; }
+.tree-fav.on { color: #e5a400; }
+.tree-resizer {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 6px;
+  cursor: col-resize;
+  z-index: 7;
+}
+.tree-resizer:hover { background: color-mix(in srgb, var(--accent) 30%, transparent); }
+
+/* ===== 顶部收藏夹入口 ===== */
+#btn-fav-menu .svg-icon { width: 12px; height: 12px; margin-right: 4px; vertical-align: -1px; }
+#btn-fav-menu.active {
+  background: color-mix(in srgb, #e5a400 16%, transparent);
+  border-color: color-mix(in srgb, #e5a400 45%, var(--border));
+  color: #e5a400;
+}
+
+/* ===== 统一复选框样式 ===== */
+input[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  padding: 0;
+  border: 1.3px solid var(--muted);
+  border-radius: 3px;
+  background: transparent;
+  cursor: pointer;
+  position: relative;
+  flex: 0 0 auto;
+}
+input[type="checkbox"]:hover { border-color: var(--accent); }
+input[type="checkbox"]:checked, input[type="checkbox"]:indeterminate {
+  background-color: var(--accent);
+  border-color: var(--accent);
+  background-repeat: no-repeat;
+  background-position: center;
+  background-size: 10px 10px;
+}
+input[type="checkbox"]:checked {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M3.5 8.5l3 3 6-7' fill='none' stroke='%23fff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+}
+input[type="checkbox"]:indeterminate {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M3 8h10' fill='none' stroke='%23fff' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E");
+}
+input[type="checkbox"]:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+dialog label.chk input[type="checkbox"],
+th.check input[type="checkbox"],
+td.check input[type="checkbox"],
+.policy-actions input[type="checkbox"] { width: 14px; height: 14px; margin: 0; }
+
+/* ===== 设置项路径选择 ===== */
+.input-row { display: flex; align-items: center; gap: 6px; }
+.input-row input { flex: 1; width: auto; min-width: 0; }
+.input-row button { flex: 0 0 auto; }
+
+/* ===== 更新说明 ===== */
+dialog.update { width: 600px; max-width: 94vw; }
+.update-notes {
+  margin-top: 10px;
+  max-height: 50vh;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+
+/* ===== 预览信息 ===== */
+.preview-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+  padding: 8px 2px 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+.preview-meta b { color: var(--text); font-weight: 500; }

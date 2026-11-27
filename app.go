@@ -35,7 +35,7 @@ import (
 	"OssManager/internal/transfer"
 )
 
-const appVersion = "1.4.0"
+const appVersion = "1.4.1"
 
 func logf(format string, args ...interface{}) {
 	_ = os.MkdirAll(config.DataDir(), 0o755)
@@ -1091,6 +1091,7 @@ type UpdateInfo struct {
 	Current   string `json:"current"`
 	Latest    string `json:"latest"`
 	URL       string `json:"url"`
+	Notes     string `json:"notes"`
 	HasUpdate bool   `json:"hasUpdate"`
 }
 
@@ -1113,6 +1114,7 @@ func (a *App) CheckUpdate() (UpdateInfo, error) {
 	}
 	var release struct {
 		TagName string `json:"tag_name"`
+		Body    string `json:"body"`
 		Assets  []struct {
 			Name               string `json:"name"`
 			BrowserDownloadURL string `json:"browser_download_url"`
@@ -1122,6 +1124,7 @@ func (a *App) CheckUpdate() (UpdateInfo, error) {
 		return info, err
 	}
 	info.Latest = release.TagName
+	info.Notes = strings.TrimSpace(release.Body)
 	for _, asset := range release.Assets {
 		if strings.HasSuffix(strings.ToLower(asset.Name), ".exe") {
 			info.URL = asset.BrowserDownloadURL
@@ -1161,7 +1164,7 @@ func compareVersion(left, right string) int {
 }
 
 // DownloadUpdate 在后台下载新版本到程序目录并登记，不退出程序；安装由 ApplyUpdate 触发。
-func (a *App) DownloadUpdate(url, version string) error {
+func (a *App) DownloadUpdate(url, version, notes string) error {
 	if url == "" {
 		return fmt.Errorf("没有可下载的更新包")
 	}
@@ -1198,7 +1201,7 @@ func (a *App) DownloadUpdate(url, version string) error {
 		_ = os.Remove(tmp)
 		return err
 	}
-	state := UpdateState{Ready: true, Version: version, URL: url, Path: target}
+	state := UpdateState{Ready: true, Version: version, URL: url, Path: target, Notes: notes}
 	data, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {
 		return err
@@ -1219,9 +1222,11 @@ func (a *App) DownloadUpdate(url, version string) error {
 // UpdateState 是已下载待安装更新的状态。
 type UpdateState struct {
 	Ready   bool   `json:"ready"`
+	Current string `json:"current"`
 	Version string `json:"version"`
 	URL     string `json:"url"`
 	Path    string `json:"path"`
+	Notes   string `json:"notes"`
 	Error   string `json:"error"`
 }
 
@@ -1235,13 +1240,13 @@ func updateMetaPath() string {
 
 // GetUpdateState 返回已下载的更新；update.json 与 update.exe 同时存在才算就绪。
 func (a *App) GetUpdateState() UpdateState {
-	state := UpdateState{}
+	state := UpdateState{Current: appVersion}
 	data, err := os.ReadFile(updateMetaPath())
 	if err != nil {
 		return state
 	}
 	if err := json.Unmarshal(data, &state); err != nil {
-		return UpdateState{}
+		return UpdateState{Current: appVersion}
 	}
 	if state.Path == "" {
 		state.Path = updateExePath()
@@ -1317,7 +1322,7 @@ func (a *App) autoCheckUpdate() {
 	if existing.Ready && strings.TrimPrefix(existing.Version, "v") == strings.TrimPrefix(info.Latest, "v") {
 		return
 	}
-	if err := a.DownloadUpdate(info.URL, info.Latest); err != nil {
+	if err := a.DownloadUpdate(info.URL, info.Latest, info.Notes); err != nil {
 		logf("auto update download err=%v", err)
 	}
 }
