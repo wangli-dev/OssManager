@@ -36,9 +36,11 @@ var (
 const (
 	sOK                        = 0
 	sFalse                     = 1
-	dragdropSDrop              = 0x80040101
-	dragdropSCancel            = 0x80040102
-	dragdropSUseDefaultCursors = 0x80040103
+	// DRAGDROP_S_* 是成功码（高位 0x0004）；写成 0x8004 开头会被外壳当成失败，
+	// QueryContinueDrag/GiveFeedback 一被回调就中止，拖出必现“拖拽已取消”。
+	dragdropSDrop              = 0x00040100 // DRAGDROP_S_DROP
+	dragdropSCancel            = 0x00040101 // DRAGDROP_S_CANCEL
+	dragdropSUseDefaultCursors = 0x00040102 // DRAGDROP_S_USEDEFAULTCURSORS
 	oleEAdviseNotSupported     = 0x80040004
 	dvEEtymed                  = 0x80040069
 	dvEFormatetc               = 0x80040064

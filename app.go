@@ -720,11 +720,15 @@ func (a *App) DragOutFiles(remotePaths []string) (string, error) {
 	if len(remotePaths) == 0 {
 		return "", fmt.Errorf("没有可拖拽的文件")
 	}
+	// 顺手回收超过 24 小时的历史残留（后台执行，不阻塞起拖）。
+	go cleanupDragCache()
 	cache := filepath.Join(config.DataDir(), "drag-cache", fmt.Sprintf("%d", time.Now().UnixNano()))
 	var localPaths []string
 	for _, rp := range remotePaths {
 		local, err := transfer.Download(a.ctx, a.settings.RcloneConfig, rp, cache)
 		if err != nil {
+			// 下载失败：本次缓存目录立即回收。
+			os.RemoveAll(cache)
 			logf("DragOut download %s err=%v", rp, err)
 			return "", fmt.Errorf("下载 %s 失败：%w", rp, err)
 		}
@@ -732,6 +736,10 @@ func (a *App) DragOutFiles(remotePaths []string) (string, error) {
 	}
 	dropped, err := shelldrag.DragOut(localPaths)
 	logf("DragOut files=%d dropped=%v err=%v", len(localPaths), dropped, err)
+	if err != nil || !dropped {
+		// 拖拽出错或未落到目标：文件没交给外壳，本次缓存立即回收。
+		os.RemoveAll(cache)
+	}
 	if err != nil {
 		return "", err
 	}
@@ -739,6 +747,29 @@ func (a *App) DragOutFiles(remotePaths []string) (string, error) {
 		return "拖拽已取消", nil
 	}
 	return fmt.Sprintf("已拖出 %d 个文件", len(localPaths)), nil
+}
+
+// cleanupDragCache 删除 drag-cache 下超过 24 小时的残留目录；
+// 拖拽成功落盘的目录不能当场删（外壳可能仍在异步复制），只能靠这里延时回收。
+func cleanupDragCache() {
+	root := filepath.Join(config.DataDir(), "drag-cache")
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return
+	}
+	deadline := time.Now().Add(-24 * time.Hour)
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil || info.ModTime().After(deadline) {
+			continue
+		}
+		if err := os.RemoveAll(filepath.Join(root, e.Name())); err == nil {
+			logf("cleanup drag-cache %s", e.Name())
+		}
+	}
 }
 
 // CopyRemoteToClipboard 下载远程对象到临时目录并写入剪贴板。
