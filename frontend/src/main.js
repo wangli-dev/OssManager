@@ -198,10 +198,23 @@ function renderTabs() {
   host.innerHTML = html;
   host.querySelectorAll('.tab').forEach((node) => {
     node.onclick = (e) => {
-      if (e.target.dataset && e.target.dataset.closeLocal) { closeLocalTab(); return; }
-      if (e.target.dataset && e.target.dataset.close) { closeTab(e.target.dataset.close); return; }
+      // 关闭图标是 SVG，点击目标可能是 path，需要向上找带 data-close 的节点。
+      const closeLocal = e.target.closest && e.target.closest('[data-close-local]');
+      if (closeLocal) { closeLocalTab(); return; }
+      const closeRemote = e.target.closest && e.target.closest('[data-close]');
+      if (closeRemote) { closeTab(closeRemote.dataset.close); return; }
       if (node.dataset.localTab) { activateLocalTab(); return; }
       openTab(node.dataset.name);
+    };
+    node.oncontextmenu = (e) => {
+      e.preventDefault();
+      const isLocal = !!node.dataset.localTab;
+      showMenu(e.clientX, e.clientY, [
+        { label: '关闭', action: () => (isLocal ? closeLocalTab() : closeTab(node.dataset.name)) },
+        { label: '关闭其他', action: () => closeOtherTabs(isLocal ? 'local' : 'remote', node.dataset.name) },
+        { separator: true },
+        { label: '关闭全部', danger: true, action: closeAllTabs },
+      ]);
     };
     // 拖动页签调整顺序：与拖入文件（上传/复制）互不干扰。
     node.ondragstart = (e) => {
@@ -321,7 +334,11 @@ function openTabAddMenu(event) {
   });
   items.push({ separator: true });
   items.push({ label: '新建连接…', action: () => openEdit(null) });
-  items.push({ label: '添加网络共享…', action: openNetDialog });
+  items.push({ label: '添加网络共享…', action: () => openEdit(null, 'smb') });
+  if (tabOrder.length || state.localTab) {
+    items.push({ separator: true });
+    items.push({ label: '关闭全部页签', danger: true, action: closeAllTabs });
+  }
   showMenu(rect.left, rect.bottom + 4, items);
 }
 
@@ -418,6 +435,73 @@ function pruneTabs(aliveNames) {
     }
   }
   renderTabs();
+}
+
+// closeOtherTabs 只保留指定页签；kind 为 local 时保留此电脑页签。
+function closeOtherTabs(kind, name) {
+  if (kind === 'local') {
+    tabOrder.length = 0;
+    Object.keys(tabCache).forEach((tab) => delete tabCache[tab]);
+    state.active = null;
+    state.path = '';
+    state.entries = [];
+    state.selected = null;
+    state.multi.clear();
+    state.view = 'local';
+    renderTabs();
+    renderConnections();
+    if (state.localTab) loadLocalView(state.localTab.path);
+    saveSession();
+    syncTree();
+    return;
+  }
+  for (const tab of [...tabOrder]) {
+    if (tab === name) continue;
+    const idx = tabOrder.indexOf(tab);
+    if (idx >= 0) tabOrder.splice(idx, 1);
+    delete tabCache[tab];
+  }
+  // 只保留一个远程页签时，此电脑页签一并关闭。
+  state.localTab = null;
+  state.view = 'remote';
+  state.active = name;
+  const cached = cacheOf(name);
+  state.path = cached.path;
+  state.entries = cached.entries;
+  state.selected = cached.selected;
+  state.multi = new Set(cached.multi);
+  renderTabs();
+  renderConnections();
+  if (cached.loaded) { renderEntries(); updateFooter(); }
+  else loadEntries();
+  saveSession();
+  syncTree();
+}
+
+// closeAllTabs 关闭远程与此电脑的全部页签，回到起始页。
+function closeAllTabs() {
+  cancelAutoSize();
+  tabOrder.length = 0;
+  Object.keys(tabCache).forEach((name) => delete tabCache[name]);
+  state.localTab = null;
+  state.active = null;
+  state.path = '';
+  state.entries = [];
+  state.selected = null;
+  state.multi.clear();
+  state.view = 'remote';
+  renderTabs();
+  renderConnections();
+  renderEntries();
+  updateFooter();
+  state.connCollapsed = false;
+  applyConnCollapsed();
+  if (state.treeVisible) {
+    tree.key = '';
+    tree.nodes.clear();
+    renderTree();
+  }
+  saveSession();
 }
 
 const app = document.getElementById('app');
@@ -646,7 +730,6 @@ function renderShell() {
     <header>
       <div class="header-side header-left">
         <button id="conn-add" class="primary" title="新建连接">新建连接</button>
-        <button id="share-add" title="添加网络共享目录">新建共享</button>
       </div>
       <div class="header-center">
         <button id="conn-quick" class="conn-quick" title="选择连接" style="display:none">选择连接 ▾</button>
@@ -696,7 +779,7 @@ function renderShell() {
     <div id="conn-popover" class="conn-popover" style="display:none"><div id="conn-popover-body"></div></div>
     <dialog id="edit-dialog">
       <h2 id="edit-title">新建连接</h2>
-      <label>名称</label><input id="edit-name" />
+      <label id="edit-name-label">名称</label><input id="edit-name" />
       <p class="hint" id="edit-name-hint"></p>
       <label>类型</label>
       <select id="edit-type">
@@ -706,17 +789,18 @@ function renderShell() {
         <option value="webdav">WebDAV</option>
         <option value="sftp">SFTP</option>
         <option value="ftp">FTP</option>
+        <option value="smb">网络共享（SMB / UNC）</option>
       </select>
-      <label>端点 / 主机</label><input id="edit-endpoint" />
-      <label>账号 / Access Key</label><input id="edit-account" />
-      <label>密钥（可点击右侧按钮查看）</label>
+      <label id="edit-endpoint-label">端点 / 主机</label><input id="edit-endpoint" />
+      <label id="edit-account-label">账号 / Access Key</label><input id="edit-account" />
+      <label id="edit-secret-label">密钥（可点击右侧按钮查看）</label>
       <div class="secret-row">
         <input id="edit-secret" type="password" />
         <button id="edit-secret-eye" type="button" title="显示/隐藏密钥">${ICONS.eye}</button>
       </div>
-      <label>区域（可空）</label><input id="edit-region" />
-      <h3 class="form-head">挂载</h3>
-      <div class="row">
+      <div id="edit-region-row"><label>区域（可空）</label><input id="edit-region" /></div>
+      <h3 class="form-head" id="edit-mount-head">挂载</h3>
+      <div class="row" id="edit-mount-row">
         <div>
           <label>盘符（留空不挂载）</label>
           <select id="edit-drive"><option value="">不挂载</option></select>
@@ -768,6 +852,7 @@ function renderShell() {
     </dialog>
     <dialog id="settings-dialog" class="settings">
       <h2>设置<button id="settings-x" class="dialog-x" title="关闭">${ICONS.close}</button></h2>
+      <div class="settings-body">
       <h3>启动</h3>
       <label>启动时显示</label>
       <select id="set-startup-view">
@@ -817,6 +902,7 @@ function renderShell() {
       <div class="row">
         <button id="set-export-bundle">导出配置包…</button>
         <button id="set-import-bundle">导入配置包…</button>
+      </div>
       </div>
       <div class="footer">
         <button id="settings-save">保存</button>
@@ -911,16 +997,6 @@ function renderShell() {
         <button id="import-ok" class="primary">开始导入</button>
       </div>
     </dialog>
-    <dialog id="net-dialog">
-      <h2>连接局域网共享</h2>
-      <label>共享路径（如 \\\\192.168.1.10\\project）</label><input id="net-path" />
-      <label>用户名（留空使用当前登录身份）</label><input id="net-user" />
-      <label>密码</label><input id="net-pass" type="password" />
-      <div class="footer">
-        <button id="net-cancel">取消</button>
-        <button id="net-ok" class="primary">连接</button>
-      </div>
-    </dialog>
     <dialog id="copy-dialog" class="copy">
       <h2><span id="copy-title">复制到</span><button id="copy-x" class="dialog-x" title="关闭">${ICONS.close}</button></h2>
       <label>目标位置</label>
@@ -976,7 +1052,6 @@ function renderShell() {
     ]);
   };
   document.getElementById('conn-add').onclick = (e) => { e.stopPropagation(); openEdit(null); };
-  document.getElementById('share-add').onclick = (e) => { e.stopPropagation(); openNetDialog(); };
   document.getElementById('btn-fav-menu').onclick = (e) => { e.stopPropagation(); openFavoritesMenu(e); };
   document.getElementById('btn-autosize').onclick = toggleAutoSize;
   document.getElementById('btn-transfer').onclick = openHistory;
@@ -1018,8 +1093,6 @@ function renderShell() {
   document.getElementById('export-ok').onclick = confirmExport;
   document.getElementById('import-cancel').onclick = () => document.getElementById('import-dialog').close();
   document.getElementById('import-ok').onclick = confirmImport;
-  document.getElementById('net-cancel').onclick = () => document.getElementById('net-dialog').close();
-  document.getElementById('net-ok').onclick = confirmNet;
   document.getElementById('about-close').onclick = () => document.getElementById('about-dialog').close();
   document.getElementById('about-update').onclick = () => checkUpdate(false);
   document.getElementById('mount-cancel').onclick = () => document.getElementById('mount-dialog').close();
@@ -1037,6 +1110,7 @@ function renderShell() {
   document.getElementById('edit-cancel').onclick = () => document.getElementById('edit-dialog').close();
   document.getElementById('edit-save').onclick = saveConnection;
   document.getElementById('edit-test').onclick = testConnectionInput;
+  document.getElementById('edit-type').onchange = applyEditType;
   document.getElementById('edit-secret-eye').onclick = () => {
     const input = document.getElementById('edit-secret');
     const eye = document.getElementById('edit-secret-eye');
@@ -2745,30 +2819,6 @@ function dirOf(path) {
   return index > 0 ? value.slice(0, index) : value;
 }
 
-function openNetDialog() {
-  document.getElementById('net-path').value = '';
-  document.getElementById('net-user').value = '';
-  document.getElementById('net-pass').value = '';
-  document.getElementById('net-dialog').showModal();
-}
-
-async function confirmNet() {
-  const path = document.getElementById('net-path').value.trim();
-  if (!path) return;
-  const user = document.getElementById('net-user').value.trim();
-  const password = document.getElementById('net-pass').value;
-  document.getElementById('net-dialog').close();
-  setStatus('正在连接 ' + path + ' …');
-  try {
-    await api().MountNetworkLocation(path, user, password);
-    await refresh();
-    await initLocal();
-    const share = state.shares.find((item) => item.remote === path);
-    openLocalTab((share && share.local) || path, share ? shareLabel(share) : path);
-    notify('已连接 ' + path);
-  } catch (err) { notify('连接失败：' + err, true); }
-}
-
 // navigateRemote 先显示加载占位再请求列表，双击进入时反馈更快。
 function navigateRemote(path) {
   state.selected = null;
@@ -2904,7 +2954,7 @@ async function unmountShareFromDialog() {
   await unmountShare(share);
 }
 
-async function openEdit(name) {
+async function openEdit(name, presetType) {
   state.editing = name || null;
   document.getElementById('edit-title').textContent = name ? '编辑连接' : '新建连接';
   // 密钥默认为隐藏，并清空上次残留值。
@@ -2918,7 +2968,13 @@ async function openEdit(name) {
   document.getElementById('edit-name-hint').textContent = name
     ? '这里修改的是界面显示名称，连接标识与已有挂载保持不变。'
     : '新建连接时名称同时作为连接标识，不能包含空格或方括号。';
-  document.getElementById('edit-type').value = 'minio';
+  document.getElementById('edit-type').value = presetType || 'minio';
+  // 已保存的远程连接不允许直接改成网络共享（共享通过“新建连接”添加）。
+  const smbOption = document.querySelector('#edit-type option[value="smb"]');
+  if (smbOption) smbOption.disabled = !!name;
+  if (name && document.getElementById('edit-type').value === 'smb') {
+    document.getElementById('edit-type').value = 'minio';
+  }
   let info = { drive: '', volume: '' };
   let displayName = '';
   if (name) {
@@ -2948,7 +3004,31 @@ async function openEdit(name) {
   const volume = document.getElementById('edit-volume');
   volume.value = info.volume || displayName || name || '';
   volume.placeholder = displayName || name || '与名称一致';
+  applyEditType();
   document.getElementById('edit-dialog').showModal();
+}
+
+// applyEditType 根据连接类型切换字段文案：网络共享只需要路径、用户名与密码。
+function applyEditType() {
+  const type = document.getElementById('edit-type').value;
+  const smb = type === 'smb';
+  document.getElementById('edit-name-label').style.display = smb ? 'none' : '';
+  document.getElementById('edit-name').style.display = smb ? 'none' : '';
+  document.getElementById('edit-name-hint').style.display = smb ? 'none' : '';
+  document.getElementById('edit-endpoint-label').textContent = smb
+    ? '共享路径（如 \\\\192.168.1.10\\project）'
+    : '端点 / 主机';
+  document.getElementById('edit-account-label').textContent = smb ? '用户名（留空使用当前登录身份）' : '账号 / Access Key';
+  document.getElementById('edit-secret-label').textContent = smb ? '密码' : '密钥（可点击右侧按钮查看）';
+  document.getElementById('edit-region-row').style.display = smb ? 'none' : '';
+  document.getElementById('edit-mount-head').style.display = smb ? 'none' : '';
+  document.getElementById('edit-mount-row').style.display = smb ? 'none' : '';
+  document.getElementById('edit-test').textContent = smb ? '测试共享' : '测试连接';
+  if (smb && !state.editing) {
+    document.getElementById('edit-title').textContent = '新建网络共享';
+  } else {
+    document.getElementById('edit-title').textContent = state.editing ? '编辑连接' : '新建连接';
+  }
 }
 
 // sanitizeRemoteName 去掉段名不允许的空白与方括号，保住新建连接可用。
@@ -2973,6 +3053,17 @@ function readConnectionForm() {
 // testConnectionInput 在保存前用当前表单参数测试连通性。
 async function testConnectionInput() {
   const def = readConnectionForm();
+  if (def.type === 'smb') {
+    if (!def.endpoint) { notify('请填写共享路径', true); return; }
+    setStatus('正在测试共享 ' + def.endpoint + ' …');
+    try {
+      await api().ListLocal(def.endpoint);
+      notify('共享可访问');
+    } catch (err) {
+      notify('访问失败：' + (describeError(err) || err), true);
+    }
+    return;
+  }
   setStatus('正在测试连接 ' + (def.endpoint || '') + ' …');
   try {
     await api().TestConnectionInput(def);
@@ -2984,6 +3075,21 @@ async function testConnectionInput() {
 
 async function saveConnection() {
   const def = readConnectionForm();
+  if (def.type === 'smb') {
+    const path = String(def.endpoint || '').trim();
+    if (!path) { notify('请填写共享路径', true); return; }
+    document.getElementById('edit-dialog').close();
+    setStatus('正在连接共享 ' + path + ' …');
+    try {
+      await api().MountNetworkLocation(path, def.account, def.secret);
+      await refresh();
+      await initLocal();
+      const share = state.shares.find((item) => item.remote === path);
+      openLocalTab((share && share.local) || path, share ? shareLabel(share) : path);
+      notify('已连接 ' + path);
+    } catch (err) { notify('连接失败：' + err, true); }
+    return;
+  }
   const isNew = !state.editing;
   const drive = document.getElementById('edit-drive').value;
   const volume = document.getElementById('edit-volume').value.trim() || def.displayName || def.name;
