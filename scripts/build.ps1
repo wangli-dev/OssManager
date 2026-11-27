@@ -44,6 +44,20 @@ if (@($embedded) -notcontains $distIndex.Name) {
 }
 Write-Host "构建完成：$exe（内嵌前端 $($distIndex.Name)）"
 
+# ---- 3.5) bindings 漂移提示（对应 TODO C2）：wailsjs 仅为 IDE 类型提示，前端运行时走 window.go.main.App，
+# 漂移不影响功能；wails generate module 在 Windows 下即使带 -tags cmount 也报 Cannot create a file...，
+# 无法自动再生，因此只提醒不阻塞 ----
+$goMethods = Select-String -Path "$root\app.go" -Pattern 'func \(a \*App\) ([A-Z]\w+)\(' -AllMatches -CaseSensitive |
+    ForEach-Object { $_.Matches } | ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique
+$dtsMethods = Select-String -Path "$root\frontend\wailsjs\go\main\App.d.ts" -Pattern 'export function (\w+)\(' -AllMatches -CaseSensitive |
+    ForEach-Object { $_.Matches } | ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique
+$missing = @($goMethods | Where-Object { $dtsMethods -notcontains $_ })
+if ($missing.Count -gt 0) {
+    Write-Host "[提示] wailsjs 类型提示落后于 Go 方法（不影响运行时）：$($missing -join ', ')" -ForegroundColor Yellow
+} else {
+    Write-Host "bindings 校验通过：app.go $($goMethods.Count) 个导出方法全部有前端类型提示"
+}
+
 # ---- 4) 可选部署：退出运行中的程序 → 备份 → 覆盖 → 裁剪备份（对应 TODO A5）----
 if ($Deploy) {
     Get-Process OssManager -ErrorAction SilentlyContinue | Stop-Process -Force

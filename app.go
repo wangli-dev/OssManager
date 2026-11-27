@@ -2,15 +2,18 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"mime"
 	"net/http"
+	neturl "net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+	goruntime "runtime"
 	"strings"
 	"sync"
 	"syscall"
@@ -57,6 +60,23 @@ func rotateLog(path string, limit int64) {
 	_ = os.Rename(path, path+".1")
 }
 
+// tightenFileACL 把文件 ACL 收紧为仅当前用户与 SYSTEM 完全控制（去掉继承的 Everyone/Users），
+// 用于保护 ossManage.conf 等含明文密钥的配置；失败仅记日志，不阻断主流程。幂等，可重复执行。
+func tightenFileACL(path string) {
+	if path == "" || goruntime.GOOS != "windows" {
+		return
+	}
+	user := os.Getenv("USERDOMAIN") + "\\" + os.Getenv("USERNAME")
+	if user == "\\" {
+		return
+	}
+	// /inheritance:r 去掉继承权限，/grant:r 只授当前用户与 SYSTEM（*S-1-5-18 用 SID 避免本地化名称问题）。
+	out, err := exec.Command("icacls", path, "/inheritance:r", "/grant:r", user+":F", "*S-1-5-18:F").CombinedOutput()
+	if err != nil {
+		logf("tighten ACL %s err=%v out=%s", path, err, strings.TrimSpace(string(out)))
+	}
+}
+
 // App 是 Wails 暴露给前端的后端。
 type App struct {
 	ctx      context.Context
@@ -79,11 +99,18 @@ func (a *App) startup(ctx context.Context) {
 	// rclone 库运行日志落盘：挂载会话断线、目录列表失败等错误此前静默丢失，无法排查。
 	log.Opt.File = filepath.Join(config.DataDir(), "rclone-lib.log")
 	// 两层都要设置：fs.Debugf 入口按 fs.Config.LogLevel 过滤，slog handler 按 SetLevel 过滤。
-	fs.GetConfig(ctx).LogLevel = fs.LogLevelDebug
+	// 默认 INFO；设置页打开「调试日志」才是 Debug（重启后生效），避免日志快速增长。
+	level := fs.LogLevelInfo
+	if a.settings.DebugLog {
+		level = fs.LogLevelDebug
+	}
+	fs.GetConfig(ctx).LogLevel = level
 	log.InitLogging()
-	log.Handler.SetLevel(fs.LogLevelToSlog(fs.LogLevelDebug))
+	log.Handler.SetLevel(fs.LogLevelToSlog(level))
 	// 保持开机自启项与设置一致（exe 移动后会更新路径）。
 	syncAutoStart(a.settings.AutoStart)
+	// 连接配置内含各连接明文 AK/SK，收紧为仅当前用户与 SYSTEM 可读，防同机其他账户窥探。
+	go tightenFileACL(a.settings.RcloneConfig)
 	go a.restoreMounts()
 	go a.autoCheckUpdate()
 }
@@ -1314,6 +1341,12 @@ func (a *App) DownloadUpdate(url, version, notes string) error {
 	if url == "" {
 		return fmt.Errorf("没有可下载的更新包")
 	}
+	// 域名白名单：DownloadUpdate 是 Wails 绑定方法，URL 可被前端任意构造，
+	// 必须兜底防止任意来源的 exe 替换程序本体。
+	parsed, err := neturl.Parse(url)
+	if err != nil || !updateHostAllowed(parsed.Hostname()) {
+		return fmt.Errorf("更新包地址不受信任：%s", url)
+	}
 	client := &http.Client{Timeout: 30 * time.Minute}
 	response, err := client.Get(url)
 	if err != nil {
@@ -1342,6 +1375,11 @@ func (a *App) DownloadUpdate(url, version, notes string) error {
 	if written < 1<<20 {
 		_ = os.Remove(tmp)
 		return fmt.Errorf("下载文件异常：只有 %d 字节", written)
+	}
+	// 完整性校验：上游 release 附 .sha256 时必须匹配，不匹配拒绝登记安装；未附（404）时跳过。
+	if err := verifyUpdateSHA256(client, url, tmp); err != nil {
+		_ = os.Remove(tmp)
+		return err
 	}
 	if err := os.Rename(tmp, target); err != nil {
 		_ = os.Remove(tmp)
@@ -1382,6 +1420,66 @@ func updateExePath() string {
 
 func updateMetaPath() string {
 	return filepath.Join(config.DataDir(), "update.json")
+}
+
+// updateHostWhitelist 是允许的更新包下载域名；release 下载会重定向到 GitHub 的 CDN 域，一并列入。
+var updateHostWhitelist = []string{
+	"github.com",
+	"objects.githubusercontent.com",
+	"release-assets.githubusercontent.com",
+}
+
+func updateHostAllowed(host string) bool {
+	host = strings.ToLower(host)
+	for _, item := range updateHostWhitelist {
+		if host == item {
+			return true
+		}
+	}
+	return false
+}
+
+// verifyUpdateSHA256 尝试下载更新包对应的 .sha256 并校验本地文件完整性；
+// 上游未附 .sha256（404）时跳过校验并记日志，其余失败一律拒绝安装。
+func verifyUpdateSHA256(client *http.Client, packageURL, local string) error {
+	sumURL := packageURL + ".sha256"
+	response, err := client.Get(sumURL)
+	if err != nil {
+		return fmt.Errorf("下载 .sha256 失败：%w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode == http.StatusNotFound {
+		// 上游未发布校验文件：仅剩域名白名单与最小尺寸两道防线。
+		logf("update sha256 not published, skip verify url=%s", sumURL)
+		return nil
+	}
+	if response.StatusCode != 200 {
+		return fmt.Errorf("获取 .sha256 失败：HTTP %d", response.StatusCode)
+	}
+	data, err := io.ReadAll(io.LimitReader(response.Body, 4<<10))
+	if err != nil {
+		return err
+	}
+	// 文件格式为 "<hex>  <文件名>"，取第一个字段。
+	fields := strings.Fields(string(data))
+	if len(fields) == 0 || len(fields[0]) != 64 {
+		return fmt.Errorf(".sha256 内容异常")
+	}
+	file, err := os.Open(local)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	hasher := sha256.New()
+	if _, err := io.Copy(hasher, file); err != nil {
+		return err
+	}
+	actual := fmt.Sprintf("%x", hasher.Sum(nil))
+	if actual != strings.ToLower(fields[0]) {
+		return fmt.Errorf("sha256 不匹配：期望 %s 实际 %s（已拒绝安装）", fields[0], actual)
+	}
+	logf("update sha256 verified")
+	return nil
 }
 
 // GetUpdateState 返回已下载的更新；update.json 与 update.exe 同时存在才算就绪。

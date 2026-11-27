@@ -30,6 +30,8 @@ type Settings struct {
 	ServerModtimeRemotes []string `json:"serverModtimeRemotes"`
 	// AutoUpdate 开启后启动时自动检查并在后台下载新版本，由用户点右上角按钮重启安装。
 	AutoUpdate bool `json:"autoUpdate"`
+	// DebugLog 开启后 rclone 库日志用 Debug 级别（排查问题用）；默认 Info，避免日志无限膨胀。
+	DebugLog bool `json:"debugLog"`
 	// AutoStart 开启后登录 Windows 时自动启动后台挂载进程（不显示主窗口）。
 	AutoStart bool `json:"autoStart"`
 }

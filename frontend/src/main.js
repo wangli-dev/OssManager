@@ -1014,6 +1014,7 @@ function renderShell() {
       </div>
       <h3>更新</h3>
       <label class="chk"><input type="checkbox" id="set-auto-update" /> 启动后自动检查更新，并在后台下载新版本</label>
+      <label class="chk"><input type="checkbox" id="set-debug-log" /> 调试日志（rclone 详细日志，增长更快，重启后生效）</label>
       <div class="row">
         <button id="set-check-update">立即检查更新</button>
         <span id="set-update-state" class="hint"></span>
@@ -4669,6 +4670,7 @@ async function openSettings() {
   document.getElementById('set-autosize-interval').value = s.autoSizeInterval ?? 2;
   document.getElementById('set-download-dir').value = s.downloadDirectory || '';
   document.getElementById('set-drag-mode').value = s.dragMode || 'shell';
+  document.getElementById('set-debug-log').checked = !!s.debugLog;
   document.getElementById('set-auto-update').checked = s.autoUpdate !== false;
   document.getElementById('set-update-state').textContent = '';
   document.getElementById('settings-dialog').showModal();
@@ -4716,6 +4718,7 @@ async function saveSettings(closeAfter = false) {
     downloadDirectory: document.getElementById('set-download-dir').value.trim(),
     dragMode: document.getElementById('set-drag-mode').value,
     autoUpdate: document.getElementById('set-auto-update').checked,
+    debugLog: document.getElementById('set-debug-log').checked,
   };
   try {
     await api().SaveSettings(next);
