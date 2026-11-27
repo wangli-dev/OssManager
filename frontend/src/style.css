@@ -253,7 +253,7 @@ section.files {
 
 .crumbs b { color: var(--text); font-weight: 600; }
 
-#entries { flex: 1; overflow: auto; }
+#entries { flex: 1; overflow: auto; scrollbar-gutter: stable; }
 
 table { width: 100%; border-collapse: collapse; table-layout: fixed; }
 th, td { text-align: left; padding: 5px 10px; border-bottom: 1px solid var(--border); font-size: 13px; }
@@ -336,7 +336,7 @@ dialog > h2 {
   align-items: center;
   justify-content: center;
 }
-.dialog-x:hover { background: var(--accent-soft); color: var(--text); }
+.dialog-x:hover { background: color-mix(in srgb, var(--danger) 14%, transparent); color: var(--danger); }
 .dialog-x:focus { outline: none; }
 
 dialog.confirm { min-width: 0; width: 420px; max-width: 92vw; }
@@ -739,17 +739,24 @@ tbody tr.row.selected td:first-child { box-shadow: inset 3px 0 0 var(--accent); 
 }
 #tabs .tab-label { overflow: hidden; text-overflow: ellipsis; }
 #tabs .tab-close {
-  color: var(--muted);
-  font-size: 13px;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: color-mix(in srgb, var(--danger) 68%, var(--muted));
   line-height: 1;
-  padding: 0 2px;
-  border-radius: 3px;
+  border-radius: 4px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  flex: 0 0 auto;
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
 }
-#tabs .tab-close .svg-icon { width: 11px; height: 11px; }
+#tabs .tab-close .svg-icon { width: 12px; height: 12px; }
 #tabs .tab-close:hover { color: var(--danger); background: color-mix(in srgb, var(--danger) 15%, transparent); }
+#tabs .tab-close:active { background: color-mix(in srgb, var(--danger) 24%, transparent); }
 #tabs .tab.drop-target { outline: 2px dashed var(--accent); outline-offset: -2px; background: var(--accent-soft); }
 
 dialog h3.form-head {
@@ -1162,4 +1169,113 @@ dialog.settings .footer {
   margin-top: 0;
   padding: 12px 18px 18px;
   border-top: 1px solid var(--border);
+}
+
+/* ===== 连接类型下拉：应用内菜单，避免原生 select 在深色主题下样式不一致 ===== */
+.select-wrap { position: relative; }
+.select-button {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 7px 9px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 14px;
+  text-align: left;
+}
+.select-chevron { color: var(--muted); }
+.select-menu {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: calc(100% + 4px);
+  z-index: 30;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 4px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18);
+  max-height: 280px;
+  overflow: auto;
+}
+.select-option {
+  display: block;
+  width: 100%;
+  padding: 7px 10px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  border-radius: 5px;
+  font-size: 13px;
+}
+.select-option:hover { background: var(--accent-soft); }
+.select-option.active { color: var(--accent-text); font-weight: 600; }
+.select-option:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* ===== 文件列表分页 ===== */
+.pager {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 4px 10px;
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--muted);
+  background: var(--card);
+}
+.pager button { padding: 0 8px; min-height: 22px; font-size: 14px; line-height: 20px; }
+.pager button:disabled { opacity: 0.35; }
+.pager label { display: inline-flex; align-items: center; gap: 4px; margin: 0; font-size: 12px; color: var(--muted); }
+.pager input {
+  width: 58px;
+  padding: 2px 4px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 12px;
+}
+
+/* ===== FTP/SFTP 协议切换 ===== */
+.segmented {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.segmented button {
+  border: 0;
+  border-radius: 0;
+  background: var(--surface);
+  color: var(--muted);
+  padding: 5px 16px;
+  font-size: 13px;
+}
+.segmented button + button { border-left: 1px solid var(--border); }
+.segmented button.active { background: var(--accent); color: #fff; }
+
+/* ===== 此电脑多选操作栏 ===== */
+.local-actions {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px;
+  border-top: 1px solid var(--border);
+  background: var(--card);
+  font-size: 12px;
+  color: var(--muted);
+}
+.local-actions span { margin-right: auto; }
+.local-actions button { padding: 2px 9px; font-size: 12px; }
+.local-actions button.danger {
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 45%, var(--border));
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
 }

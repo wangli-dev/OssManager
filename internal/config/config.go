@@ -9,23 +9,25 @@ import (
 
 // Settings 是程序级设置；字段与 C# 版本保持兼容，便于从旧版本迁移。
 type Settings struct {
-	RcloneConfig           string   `json:"rcloneConfig"`
-	FileManager            string   `json:"fileManager"`
-	Theme                  string   `json:"theme"`
-	CacheDirectory         string   `json:"cacheDirectory"`
-	DirCacheTime           string   `json:"dirCacheTime"`
-	VfsCacheMaxSize        string   `json:"vfsCacheMaxSize"`
-	VfsCacheMaxAge         string   `json:"vfsCacheMaxAge"`
-	BufferSize             string   `json:"bufferSize"`
-	MaxConcurrentTransfers int      `json:"maxConcurrentTransfers"`
-	DownloadStreams        int      `json:"downloadStreams"`
-	DownloadDirectory      string   `json:"downloadDirectory"`
-	DragMode               string   `json:"dragMode"`
-	AutoSizeEnabled        bool     `json:"autoSizeEnabled"`
-	AutoSizeDelay          int      `json:"autoSizeDelay"`
-	AutoSizeInterval       int      `json:"autoSizeInterval"`
-	StartupView            string   `json:"startupView"`
-	ServerModtimeRemotes   []string `json:"serverModtimeRemotes"`
+	RcloneConfig           string `json:"rcloneConfig"`
+	FileManager            string `json:"fileManager"`
+	Theme                  string `json:"theme"`
+	CacheDirectory         string `json:"cacheDirectory"`
+	DirCacheTime           string `json:"dirCacheTime"`
+	VfsCacheMaxSize        string `json:"vfsCacheMaxSize"`
+	VfsCacheMaxAge         string `json:"vfsCacheMaxAge"`
+	BufferSize             string `json:"bufferSize"`
+	MaxConcurrentTransfers int    `json:"maxConcurrentTransfers"`
+	DownloadStreams        int    `json:"downloadStreams"`
+	// PageSize 是文件列表每页条数；目录内容很多时分页渲染，避免一次插入过多行。
+	PageSize             int      `json:"pageSize"`
+	DownloadDirectory    string   `json:"downloadDirectory"`
+	DragMode             string   `json:"dragMode"`
+	AutoSizeEnabled      bool     `json:"autoSizeEnabled"`
+	AutoSizeDelay        int      `json:"autoSizeDelay"`
+	AutoSizeInterval     int      `json:"autoSizeInterval"`
+	StartupView          string   `json:"startupView"`
+	ServerModtimeRemotes []string `json:"serverModtimeRemotes"`
 	// AutoUpdate 开启后启动时自动检查并在后台下载新版本，由用户点右上角按钮重启安装。
 	AutoUpdate bool `json:"autoUpdate"`
 }
@@ -115,6 +117,15 @@ func LoadSettings() Settings {
 	}
 	if value.DownloadStreams > 16 {
 		value.DownloadStreams = 16
+	}
+	if value.PageSize <= 0 {
+		value.PageSize = 200
+	}
+	if value.PageSize < 20 {
+		value.PageSize = 20
+	}
+	if value.PageSize > 2000 {
+		value.PageSize = 2000
 	}
 	if strings.TrimSpace(value.DirCacheTime) == "" {
 		value.DirCacheTime = "12h"

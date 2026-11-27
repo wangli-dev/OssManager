@@ -16,6 +16,7 @@ const state = {
   local: { path: '', entries: [], drives: [], visible: true },
   filter: '',
   sort: { key: 'name', dir: 1 },
+  page: 0,
   connCollapsed: false,
   view: 'remote',
   localTab: null,
@@ -26,6 +27,9 @@ const state = {
   favorites: [],
   favOpen: true,
   connSelected: '',
+  editType: 'minio',
+  editProtocol: 'sftp',
+  editSmbDisabled: false,
 };
 
 let dragName = null;
@@ -49,7 +53,7 @@ let tabDragItem = null;
 
 function cacheOf(name) {
   if (!tabCache[name]) {
-    tabCache[name] = { path: '', entries: [], selected: null, multi: [], error: null, scrollTop: 0, loaded: false };
+    tabCache[name] = { path: '', entries: [], selected: null, multi: [], error: null, scrollTop: 0, loaded: false, page: 0 };
     tabOrder.push(name);
   }
   return tabCache[name];
@@ -62,6 +66,7 @@ function saveActiveTab() {
   c.entries = state.entries;
   c.selected = state.selected;
   c.multi = Array.from(state.multi);
+  c.page = state.page;
   const el = document.getElementById('entries');
   c.scrollTop = el ? el.scrollTop : 0;
 }
@@ -72,6 +77,7 @@ function restoreActiveTab() {
   state.entries = c.entries;
   state.selected = c.selected;
   state.multi = new Set(c.multi);
+  state.page = c.page || 0;
   if (c.error) showBrowseError(c.error.remote, c.error.err);
   else renderEntries();
   const el = document.getElementById('entries');
@@ -188,11 +194,11 @@ function renderTabs() {
   let html = fullTabList().map((item) => {
     if (item.kind === 'local') {
       const active = state.view === 'local';
-      return `<div class="tab${active ? ' active' : ''}" data-local-tab="1" draggable="true" title="${esc(state.localTab.path)}"><span class="tab-label">${esc(state.localTab.label)}</span><span class="tab-close" data-close-local="1" title="关闭">${ICONS.close}</span></div>`;
+      return `<div class="tab${active ? ' active' : ''}" data-local-tab="1" draggable="true" title="${esc(state.localTab.path)}"><span class="tab-label">${esc(state.localTab.label)}</span><button type="button" class="tab-close" data-close-local="1" title="关闭">${ICONS.close}</button></div>`;
     }
     const active = state.view !== 'local' && item.name === state.active;
     const label = connLabel(item.name);
-    return `<div class="tab${active ? ' active' : ''}" data-name="${esc(item.name)}" draggable="true" title="${esc(label)}"><span class="tab-label">${esc(label)}</span><span class="tab-close" data-close="${esc(item.name)}" title="关闭">${ICONS.close}</span></div>`;
+    return `<div class="tab${active ? ' active' : ''}" data-name="${esc(item.name)}" draggable="true" title="${esc(label)}"><span class="tab-label">${esc(label)}</span><button type="button" class="tab-close" data-close="${esc(item.name)}" title="关闭">${ICONS.close}</button></div>`;
   }).join('');
   html += '<button id="tab-add" class="tab-add" title="打开连接 / 新建连接">+</button>';
   host.innerHTML = html;
@@ -205,6 +211,13 @@ function renderTabs() {
       if (closeRemote) { closeTab(closeRemote.dataset.close); return; }
       if (node.dataset.localTab) { activateLocalTab(); return; }
       openTab(node.dataset.name);
+    };
+    // 鼠标中键关闭页签。
+    node.onauxclick = (e) => {
+      if (e.button !== 1) return;
+      e.preventDefault();
+      if (node.dataset.localTab) closeLocalTab();
+      else closeTab(node.dataset.name);
     };
     node.oncontextmenu = (e) => {
       e.preventDefault();
@@ -390,6 +403,7 @@ function openTab(name) {
   const c = cacheOf(name);
   if (!c.loaded && !c.error) {
     // 首次打开：先显示加载中占位，不渲染空的「此位置没有对象」。
+    state.page = 0;
     state.path = c.path;
     state.entries = [];
     showBrowseLoading(name + ':' + (c.path || '/'));
@@ -570,6 +584,63 @@ function computeNameWidth(entries) {
   return { width, tableWidth: Math.max(available, width + fixed) };
 }
 
+// ===== 文件列表分页：默认每页 200 条，可在分页栏或设置中修改 =====
+function pageSize() {
+  const value = Number(state.settings && state.settings.pageSize) || 200;
+  return Math.min(2000, Math.max(20, Math.round(value)));
+}
+
+function paginate(list) {
+  const size = pageSize();
+  const total = list.length;
+  const pages = Math.max(1, Math.ceil(total / size));
+  const page = Math.min(Math.max(0, state.page || 0), pages - 1);
+  state.page = page;
+  return {
+    size,
+    total,
+    pages,
+    page,
+    start: page * size,
+    visible: list.slice(page * size, (page + 1) * size),
+  };
+}
+
+function renderPager(info) {
+  const pager = document.getElementById('pager');
+  if (!pager) return;
+  if (!info || info.total <= info.size) {
+    pager.style.display = 'none';
+    return;
+  }
+  pager.style.display = 'flex';
+  document.getElementById('pager-info').textContent = `第 ${info.page + 1} / ${info.pages} 页 · 共 ${info.total} 项`;
+  document.getElementById('page-prev').disabled = info.page <= 0;
+  document.getElementById('page-next').disabled = info.page >= info.pages - 1;
+  const input = document.getElementById('page-size');
+  if (input && document.activeElement !== input) input.value = info.size;
+}
+
+function rerenderCurrentList() {
+  if (state.view === 'local') renderLocalView();
+  else renderEntries();
+}
+
+function changePage(delta) {
+  state.page = Math.max(0, (state.page || 0) + delta);
+  rerenderCurrentList();
+}
+
+async function updatePageSize() {
+  const input = document.getElementById('page-size');
+  const value = Math.min(2000, Math.max(20, parseInt(input && input.value, 10) || 200));
+  state.page = 0;
+  state.settings = { ...state.settings, pageSize: value };
+  try { await api().SaveSettings(state.settings); }
+  catch (err) { notify('保存每页条数失败：' + err, true); }
+  rerenderCurrentList();
+}
+
 function clearFilter() {
   state.filter = '';
   const input = document.getElementById('filter-input');
@@ -716,6 +787,8 @@ function showMenu(x, y, items) {
 
 document.addEventListener('click', (e) => {
   if (menuEl && !menuEl.contains(e.target) && !(subMenuEl && subMenuEl.contains(e.target))) hideMenu();
+  const typeWrap = document.getElementById('edit-type-wrap');
+  if (typeWrap && !typeWrap.contains(e.target)) closeTypeMenu();
   const popover = document.getElementById('conn-popover');
   const button = document.getElementById('conn-quick');
   const handleOpen = document.getElementById('conn-handle-open');
@@ -773,6 +846,18 @@ function renderShell() {
           <button id="btn-list-refresh" class="icon-btn" title="刷新当前目录">${ICONS.refresh}</button>
         </div>
         <div id="entries"></div>
+        <div class="local-actions" id="local-actions" style="display:none">
+          <span id="local-selected-count"></span>
+          <button id="local-copy-selected">复制到…</button>
+          <button id="local-delete-selected" class="danger">删除</button>
+          <button id="local-clear-selection">取消选择</button>
+        </div>
+        <div class="pager" id="pager" style="display:none">
+          <span id="pager-info"></span>
+          <button id="page-prev" class="icon-btn" title="上一页">‹</button>
+          <button id="page-next" class="icon-btn" title="下一页">›</button>
+          <label>每页 <input id="page-size" type="number" min="20" max="2000" /> 条</label>
+        </div>
       </section>
     </main>
     <footer id="status"></footer>
@@ -782,15 +867,17 @@ function renderShell() {
       <label id="edit-name-label">名称</label><input id="edit-name" />
       <p class="hint" id="edit-name-hint"></p>
       <label>类型</label>
-      <select id="edit-type">
-        <option value="minio">MinIO / S3 兼容</option>
-        <option value="alibaba">阿里云 OSS</option>
-        <option value="s3">其他 S3 兼容</option>
-        <option value="webdav">WebDAV</option>
-        <option value="sftp">SFTP</option>
-        <option value="ftp">FTP</option>
-        <option value="smb">网络共享（SMB / UNC）</option>
-      </select>
+      <div class="select-wrap" id="edit-type-wrap">
+        <button type="button" id="edit-type-button" class="select-button"><span id="edit-type-label">MinIO / S3 兼容</span><span class="select-chevron">▾</span></button>
+        <div id="edit-type-menu" class="select-menu" style="display:none"></div>
+      </div>
+      <div id="edit-protocol-row" style="display:none">
+        <label>协议</label>
+        <div class="segmented" id="edit-protocol">
+          <button type="button" data-protocol="sftp" class="active">SFTP</button>
+          <button type="button" data-protocol="ftp">FTP</button>
+        </div>
+      </div>
       <label id="edit-endpoint-label">端点 / 主机</label><input id="edit-endpoint" />
       <label id="edit-account-label">账号 / Access Key</label><input id="edit-account" />
       <label id="edit-secret-label">密钥（可点击右侧按钮查看）</label>
@@ -885,6 +972,8 @@ function renderShell() {
         <option value="shell">拖到资源管理器（复制落盘）</option>
       </select>
       <h3>传输与目录统计</h3>
+      <label>文件列表每页条数（默认 200）</label>
+      <input id="set-page-size" type="number" min="20" max="2000" />
       <label>默认下载目录（留空则每次询问）</label>
       <div class="input-row"><input id="set-download-dir" placeholder="例如 D:\Downloads" /><button id="set-download-dir-pick" class="icon-btn" title="选择目录">${ICONS.folder}</button></div>
       <label class="chk"><input type="checkbox" id="set-autosize" /> 自动统计目录大小</label>
@@ -1079,8 +1168,15 @@ function renderShell() {
   document.getElementById('btn-list-refresh').onclick = refreshCurrentView;
   document.getElementById('btn-upload').onclick = uploadFiles;
   document.getElementById('btn-download').onclick = downloadSelected;
+  document.getElementById('page-prev').onclick = () => changePage(-1);
+  document.getElementById('page-next').onclick = () => changePage(1);
+  document.getElementById('page-size').onchange = updatePageSize;
+  document.getElementById('local-copy-selected').onclick = (e) => { e.stopPropagation(); const source = localSelectionSource(); if (source) openCopyMenu(e.currentTarget, source); };
+  document.getElementById('local-delete-selected').onclick = () => deleteLocalPaths(Array.from(state.localMulti));
+  document.getElementById('local-clear-selection').onclick = () => { state.localMulti.clear(); renderLocalView(); };
   document.getElementById('filter-input').oninput = (e) => {
     state.filter = e.target.value;
+    state.page = 0;
     renderEntries();
   };
   bindResizers();
@@ -1110,7 +1206,10 @@ function renderShell() {
   document.getElementById('edit-cancel').onclick = () => document.getElementById('edit-dialog').close();
   document.getElementById('edit-save').onclick = saveConnection;
   document.getElementById('edit-test').onclick = testConnectionInput;
-  document.getElementById('edit-type').onchange = applyEditType;
+  document.getElementById('edit-type-button').onclick = (e) => { e.stopPropagation(); toggleTypeMenu(); };
+  document.querySelectorAll('#edit-protocol button').forEach((button) => {
+    button.onclick = (e) => { e.stopPropagation(); state.editProtocol = button.dataset.protocol; applyEditType(); };
+  });
   document.getElementById('edit-secret-eye').onclick = () => {
     const input = document.getElementById('edit-secret');
     const eye = document.getElementById('edit-secret-eye');
@@ -1675,6 +1774,7 @@ function openLocalEntry(node) {
 function openLocalTab(path, label) {
   saveActiveTab();
   cancelAutoSize();
+  state.page = 0;
   if (!state.localTab) localTabPos = tabOrder.length;
   state.localTab = { path, label };
   state.view = 'local';
@@ -1690,7 +1790,7 @@ function openLocalTab(path, label) {
 
 function activateLocalTab() {
   if (!state.localTab) return;
-  if (state.view !== 'local') { saveActiveTab(); state.view = 'local'; }
+  if (state.view !== 'local') { saveActiveTab(); state.view = 'local'; state.page = 0; }
   clearFilter();
   renderTabs();
   renderConnections();
@@ -1711,6 +1811,7 @@ function closeLocalTab() {
 }
 
 async function loadLocalView(path) {
+  if (path !== state.localView.path) state.page = 0;
   state.localView.path = path;
   state.localMulti.clear();
   // 记录到当前本地页签，切换页签往返时回到这里，而不是最初打开的目录。
@@ -1751,14 +1852,18 @@ function renderLocalView() {
   if (state.localView.error) {
     if (stat) stat.textContent = '';
     host.innerHTML = `<div class="browse-error"><div class="be-title">读取 ${esc(state.localView.path)} 失败</div><div class="be-detail">${esc(state.localView.error)}</div></div>`;
+    renderPager(null);
     setStatus('本地目录读取失败：' + state.localView.error, true);
     return;
   }
   const keyword = state.filter.trim().toLowerCase();
   const entries = state.localView.entries;
-  const visible = entries.filter((entry) => !keyword || String(entry.name).toLowerCase().includes(keyword));
-  if (stat) stat.textContent = keyword ? `筛选 ${visible.length} / 共 ${entries.length} 项` : '';
-  const { width: nameWidth, tableWidth } = computeNameWidth(visible);
+  const filtered = entries.filter((entry) => !keyword || String(entry.name).toLowerCase().includes(keyword));
+  const pageInfo = paginate(filtered);
+  const visible = pageInfo.visible;
+  renderPager(pageInfo);
+  if (stat) stat.textContent = keyword ? `筛选 ${filtered.length} / 共 ${entries.length} 项` : '';
+  const { width: nameWidth, tableWidth } = computeNameWidth(filtered);
   const rows = visible.map((entry, index) => {
     const full = joinLocal(state.localView.path, entry.name);
     const icon = entry.isDir ? ICONS.folder : ICONS.file;
@@ -1770,7 +1875,7 @@ function renderLocalView() {
       <td class="name"><span class="icon">${icon}</span>${esc(entry.name)}</td>
       <td class="size">${esc(size)}</td>
       <td class="time">${esc(entry.modTime || '')}</td>
-      <td class="ops"><button id="local-upload-${index}" data-local-op="copy" title="复制到…">${ICONS.copy}</button><button id="local-open-${index}" data-local-op="open" title="在资源管理器中打开">${ICONS.folderOpen}</button></td>
+      <td class="ops"><button id="local-upload-${index}" data-local-op="copy" title="复制到…">${ICONS.copy}</button><button id="local-open-${index}" data-local-op="open" title="在资源管理器中打开">${ICONS.folderOpen}</button><button id="local-delete-${index}" data-local-op="delete" class="danger-op" title="删除">${ICONS.trash}</button></td>
     </tr>`;
   }).join('');
   const body = rows || `<tr><td colspan="5" class="empty">${keyword ? '没有匹配的条目' : '空目录'}</td></tr>`;
@@ -1831,18 +1936,22 @@ function renderLocalView() {
     row.ondblclick = () => { if (isDir) loadLocalView(full); else api().OpenFolder(full).catch(() => {}); };
     row.oncontextmenu = (e) => {
       e.preventDefault();
+      const picked = state.localMulti.has(full) && state.localMulti.size ? Array.from(state.localMulti) : [full];
       showMenu(e.clientX, e.clientY, [
         ...(isDir ? [{ label: '进入', action: () => loadLocalView(full) }] : []),
-        { label: '复制到', children: copyTargetItems(localCopySource(full)) },
+        { label: picked.length > 1 ? `复制选中的 ${picked.length} 项到…` : '复制到…', children: copyTargetItems(localCopySource(full)) },
         { separator: true },
         { label: '复制路径', action: () => { api().SetClipboard(full); notify('已复制：' + full); } },
         { label: '在资源管理器中打开', action: () => api().OpenFolder(isDir ? full : dirOf(full)).catch((err) => notify('打开失败：' + err, true)) },
+        { separator: true },
+        { label: picked.length > 1 ? `删除选中的 ${picked.length} 项…` : '删除…', danger: true, action: () => deleteLocalPaths(picked) },
       ]);
     };
     row.querySelectorAll('button[data-local-op]').forEach((button) => {
       button.onclick = (e) => {
         e.stopPropagation();
         if (button.dataset.localOp === 'copy') openCopyMenu(button, localCopySource(full));
+        else if (button.dataset.localOp === 'delete') deleteLocalPaths([full]);
         else api().OpenFolder(isDir ? full : dirOf(full)).catch((err) => notify('打开失败：' + err, true));
       };
     });
@@ -1990,10 +2099,20 @@ function applyPendingSelect(path) {
   const name = pendingSelect.file;
   pendingSelect = null;
   if (!name) return;
-  const row = document.querySelector(`#entries tr.row[data-name="${CSS.escape(name)}"]`);
+  let row = document.querySelector(`#entries tr.row[data-name="${CSS.escape(name)}"]`);
+  if (!row) {
+    // 目标文件可能不在当前页，跳到它所在的页再定位。
+    const list = sortEntries(state.entries);
+    const index = list.findIndex((item) => item.name === name);
+    if (index < 0) return;
+    state.page = Math.floor(index / pageSize());
+    renderEntries();
+    row = document.querySelector(`#entries tr.row[data-name="${CSS.escape(name)}"]`);
+  }
   if (!row) return;
   state.multi = new Set([name]);
   row.classList.add('selected');
+  syncCheckboxes(document.getElementById('entries'), state.multi, 'select-all');
   row.scrollIntoView({ block: 'center' });
   const entry = state.entries.find((item) => item.name === name);
   const kind = entry ? (entry.isDir ? '目录' : fmtSize(entry.size)) : '';
@@ -2030,10 +2149,12 @@ function syncCheckboxes(host, selected, allId) {
     all.checked = rows.length > 0 && checked === rows.length;
     all.indeterminate = checked > 0 && checked < rows.length;
   }
+  updateLocalActions();
 }
 
 function renderEntries() {
   if (state.view === 'local' && state.localTab) { renderLocalView(); return; }
+  updateLocalActions();
   const crumbs = document.getElementById('crumbs');
   updateAutoSizeButton();
   crumbs.style.display = state.active ? 'flex' : 'none';
@@ -2041,6 +2162,7 @@ function renderEntries() {
   if (!state.active) {
     const stat = document.getElementById('filter-stat');
     if (stat) stat.textContent = '';
+    renderPager(null);
     document.getElementById('crumb-nav').innerHTML = '<span>开始使用</span>';
     document.getElementById('entries').innerHTML = `
       <div class="welcome">
@@ -2062,14 +2184,17 @@ function renderEntries() {
   // 双击空白处返回上一级。
   host.ondblclick = (e) => { if (e.target.closest && e.target.closest('tr.row')) return; goUp(); };
   const keyword = state.filter.trim().toLowerCase();
-  const visible = sortEntries(keyword
+  const filtered = sortEntries(keyword
     ? state.entries.filter((entry) => String(entry.name).toLowerCase().includes(keyword))
     : state.entries);
+  const pageInfo = paginate(filtered);
+  const visible = pageInfo.visible;
+  renderPager(pageInfo);
   const stat = document.getElementById('filter-stat');
-  if (stat) stat.textContent = keyword ? `筛选 ${visible.length} / 共 ${state.entries.length} 项` : '';
+  if (stat) stat.textContent = keyword ? `筛选 ${filtered.length} / 共 ${state.entries.length} 项` : '';
   if (!state.entries.length) { host.innerHTML = '<div class="empty">此位置没有对象</div>'; return; }
 
-  const { width: nameWidth, tableWidth } = computeNameWidth(visible);
+  const { width: nameWidth, tableWidth } = computeNameWidth(filtered);
   const arrow = (key) => (state.sort.key === key ? (state.sort.dir > 0 ? ' ▲' : ' ▼') : '');
   const rows = visible.map((en, index) => {
     const ops = en.isDir
@@ -2113,6 +2238,7 @@ function renderEntries() {
       const key = th.dataset.sort;
       if (state.sort.key === key) state.sort.dir = -state.sort.dir;
       else state.sort = { key, dir: key === 'name' ? 1 : -1 };
+      state.page = 0;
       renderEntries();
     };
   });
@@ -2824,6 +2950,7 @@ function navigateRemote(path) {
   state.selected = null;
   state.multi.clear();
   clearFilter();
+  state.page = 0;
   state.path = path;
   if (state.active) {
     showBrowseLoading(state.active + ':' + path);
@@ -2968,13 +3095,7 @@ async function openEdit(name, presetType) {
   document.getElementById('edit-name-hint').textContent = name
     ? '这里修改的是界面显示名称，连接标识与已有挂载保持不变。'
     : '新建连接时名称同时作为连接标识，不能包含空格或方括号。';
-  document.getElementById('edit-type').value = presetType || 'minio';
-  // 已保存的远程连接不允许直接改成网络共享（共享通过“新建连接”添加）。
-  const smbOption = document.querySelector('#edit-type option[value="smb"]');
-  if (smbOption) smbOption.disabled = !!name;
-  if (name && document.getElementById('edit-type').value === 'smb') {
-    document.getElementById('edit-type').value = 'minio';
-  }
+  let loadedType = presetType || 'minio';
   let info = { drive: '', volume: '' };
   let displayName = '';
   if (name) {
@@ -2982,7 +3103,7 @@ async function openEdit(name, presetType) {
       const def = await api().GetConnection(name);
       displayName = def.displayName || def.name || name;
       document.getElementById('edit-name').value = displayName;
-      document.getElementById('edit-type').value = def.type || 'minio';
+      loadedType = def.type || 'minio';
       document.getElementById('edit-endpoint').value = def.endpoint || '';
       document.getElementById('edit-account').value = def.account || '';
       document.getElementById('edit-region').value = def.region || '';
@@ -3004,26 +3125,112 @@ async function openEdit(name, presetType) {
   const volume = document.getElementById('edit-volume');
   volume.value = info.volume || displayName || name || '';
   volume.placeholder = displayName || name || '与名称一致';
+  state.editSmbDisabled = !!name;
+  if (loadedType === 'ftp' || loadedType === 'sftp') {
+    state.editProtocol = loadedType;
+    loadedType = 'ftpsftp';
+  } else if (loadedType !== 'ftpsftp') {
+    state.editProtocol = 'sftp';
+  }
+  if (state.editSmbDisabled && loadedType === 'smb') loadedType = 'minio';
+  setEditType(loadedType);
+  closeTypeMenu();
   applyEditType();
   document.getElementById('edit-dialog').showModal();
 }
 
-// applyEditType 根据连接类型切换字段文案：网络共享只需要路径、用户名与密码。
+// 连接类型下拉：用应用内菜单代替原生 select，深色主题下样式统一。
+const CONNECTION_TYPES = [
+  { value: 'minio', label: 'MinIO / S3 兼容' },
+  { value: 'alibaba', label: '阿里云 OSS' },
+  { value: 's3', label: '其他 S3 兼容' },
+  { value: 'webdav', label: 'WebDAV' },
+  { value: 'ftpsftp', label: 'FTP / SFTP' },
+  { value: 'smb', label: '网络共享（SMB / UNC）' },
+];
+
+// 不同类型的输入样例提示：FTP/SFTP 共用一项，按所选协议取提示。
+const TYPE_HINTS = {
+  minio: { name: '例如：minio-office', endpoint: '例如：http://192.168.1.10:9000', account: '例如：minioadmin', secret: '密钥', region: '可留空' },
+  alibaba: { name: '例如：ali-oss-shanghai', endpoint: '例如：oss-cn-hangzhou.aliyuncs.com', account: '例如：LTAI5t...', secret: 'AccessKey Secret', region: '例如：cn-hangzhou' },
+  s3: { name: '例如：aws-us-east', endpoint: '例如：https://s3.us-east-1.amazonaws.com', account: '例如：AKIA...', secret: 'Secret Key', region: '例如：us-east-1' },
+  webdav: { name: '例如：nextcloud', endpoint: '例如：https://dav.example.com/remote.php/dav', account: '例如：用户名', secret: '密码', region: '' },
+  sftp: { name: '例如：build-server', endpoint: '例如：192.168.1.10（默认端口 22）', account: '例如：root', secret: '密码', region: '' },
+  ftp: { name: '例如：ftp-server', endpoint: '例如：192.168.1.10（默认端口 21）', account: '例如：ftpuser', secret: '密码', region: '' },
+  smb: { name: '', endpoint: '例如：\\\\192.168.1.10\\project', account: '例如：DOMAIN\\user（可留空）', secret: '密码', region: '' },
+};
+
+function setEditType(value) {
+  state.editType = value || 'minio';
+  const item = CONNECTION_TYPES.find((type) => type.value === state.editType) || CONNECTION_TYPES[0];
+  const label = document.getElementById('edit-type-label');
+  if (label) label.textContent = item.label;
+  renderTypeMenu();
+}
+
+function renderTypeMenu() {
+  const menu = document.getElementById('edit-type-menu');
+  if (!menu) return;
+  menu.innerHTML = CONNECTION_TYPES.map((type) => {
+    const disabled = type.value === 'smb' && state.editSmbDisabled;
+    return `<button type="button" class="select-option${type.value === state.editType ? ' active' : ''}" data-type="${type.value}"${disabled ? ' disabled' : ''}>${esc(type.label)}</button>`;
+  }).join('');
+  menu.querySelectorAll('.select-option').forEach((button) => {
+    button.onclick = (e) => {
+      e.stopPropagation();
+      if (button.disabled) return;
+      setEditType(button.dataset.type);
+      closeTypeMenu();
+      applyEditType();
+    };
+  });
+}
+
+function toggleTypeMenu(force) {
+  const menu = document.getElementById('edit-type-menu');
+  if (!menu) return;
+  const show = force === undefined ? menu.style.display === 'none' : !!force;
+  menu.style.display = show ? '' : 'none';
+}
+
+function closeTypeMenu() {
+  const menu = document.getElementById('edit-type-menu');
+  if (menu) menu.style.display = 'none';
+}
+
+// applyEditType 根据连接类型切换字段文案、显隐与样例提示；FTP/SFTP 共用一项。
 function applyEditType() {
-  const type = document.getElementById('edit-type').value;
-  const smb = type === 'smb';
+  const uiType = state.editType || 'minio';
+  const protocol = state.editProtocol === 'ftp' ? 'ftp' : 'sftp';
+  const smb = uiType === 'smb';
+  const hint = uiType === 'ftpsftp' ? TYPE_HINTS[protocol] : (TYPE_HINTS[uiType] || TYPE_HINTS.minio);
+  const showRegion = uiType === 'minio' || uiType === 'alibaba' || uiType === 's3';
   document.getElementById('edit-name-label').style.display = smb ? 'none' : '';
   document.getElementById('edit-name').style.display = smb ? 'none' : '';
   document.getElementById('edit-name-hint').style.display = smb ? 'none' : '';
+  document.getElementById('edit-protocol-row').style.display = uiType === 'ftpsftp' ? '' : 'none';
+  document.querySelectorAll('#edit-protocol button').forEach((button) => {
+    button.classList.toggle('active', button.dataset.protocol === protocol);
+  });
   document.getElementById('edit-endpoint-label').textContent = smb
     ? '共享路径（如 \\\\192.168.1.10\\project）'
-    : '端点 / 主机';
-  document.getElementById('edit-account-label').textContent = smb ? '用户名（留空使用当前登录身份）' : '账号 / Access Key';
-  document.getElementById('edit-secret-label').textContent = smb ? '密码' : '密钥（可点击右侧按钮查看）';
-  document.getElementById('edit-region-row').style.display = smb ? 'none' : '';
+    : (uiType === 'ftpsftp' ? '主机地址' : (uiType === 'webdav' ? '服务地址' : '端点 / 主机'));
+  document.getElementById('edit-account-label').textContent = smb
+    ? '用户名（留空使用当前登录身份）'
+    : ((uiType === 'ftpsftp' || uiType === 'webdav') ? '用户名' : '账号 / Access Key');
+  document.getElementById('edit-secret-label').textContent = (smb || uiType === 'ftpsftp' || uiType === 'webdav')
+    ? '密码'
+    : '密钥（可点击右侧按钮查看）';
+  document.getElementById('edit-region-row').style.display = showRegion ? '' : 'none';
   document.getElementById('edit-mount-head').style.display = smb ? 'none' : '';
   document.getElementById('edit-mount-row').style.display = smb ? 'none' : '';
   document.getElementById('edit-test').textContent = smb ? '测试共享' : '测试连接';
+  // 空值样例提示，随类型与协议变化。
+  document.getElementById('edit-name').placeholder = hint.name || '';
+  document.getElementById('edit-endpoint').placeholder = hint.endpoint || '';
+  document.getElementById('edit-account').placeholder = hint.account || '';
+  document.getElementById('edit-region').placeholder = hint.region || '';
+  document.getElementById('edit-secret').placeholder = hint.secret || '';
   if (smb && !state.editing) {
     document.getElementById('edit-title').textContent = '新建网络共享';
   } else {
@@ -3039,10 +3246,11 @@ function sanitizeRemoteName(value) {
 function readConnectionForm() {
   const typed = document.getElementById('edit-name').value.trim();
   const internal = state.editing || sanitizeRemoteName(typed);
+  const uiType = state.editType || 'minio';
   return {
     name: internal,
     displayName: typed || internal,
-    type: document.getElementById('edit-type').value,
+    type: uiType === 'ftpsftp' ? (state.editProtocol || 'sftp') : uiType,
     endpoint: document.getElementById('edit-endpoint').value.trim(),
     account: document.getElementById('edit-account').value.trim(),
     secret: document.getElementById('edit-secret').value,
@@ -3632,11 +3840,50 @@ function remoteCopySource(name, isDir) {
 }
 
 function localCopySource(full) {
-  const picked = state.localMulti.size > 1 && state.localMulti.has(full)
+  const picked = state.localMulti.has(full)
     ? Array.from(state.localMulti)
     : [full];
   const name = full.split(/[\\/]/).filter(Boolean).pop() || full;
   return { kind: 'local', paths: picked, title: picked.length > 1 ? picked.length + ' 个项目' : name };
+}
+
+// 此电脑页签的多选操作来源：批量复制到远程或批量删除。
+function localSelectionSource() {
+  const picked = Array.from(state.localMulti);
+  if (!picked.length) return null;
+  const name = picked.length > 1 ? `${picked.length} 个项目` : (picked[0].split(/[\\/]/).filter(Boolean).pop() || picked[0]);
+  return { kind: 'local', paths: picked, title: name };
+}
+
+function updateLocalActions() {
+  const bar = document.getElementById('local-actions');
+  if (!bar) return;
+  const count = state.view === 'local' && state.localTab ? state.localMulti.size : 0;
+  bar.style.display = count ? 'flex' : 'none';
+  const label = document.getElementById('local-selected-count');
+  if (label) label.textContent = count ? `已选 ${count} 项` : '';
+}
+
+async function deleteLocalPaths(paths) {
+  const picked = (paths || []).filter(Boolean);
+  if (!picked.length) { notify('请先选择本地文件', true); return; }
+  const text = picked.length <= 5 ? picked.join('\n') : `选中的 ${picked.length} 项`;
+  const result = await showConfirm({
+    title: '删除本地文件',
+    text: `${text}\n\n将从磁盘永久删除，且不可恢复。`,
+    okText: '删除',
+  });
+  if (!result.ok) return;
+  setStatus('正在删除本地文件…');
+  state.localMulti.clear();
+  try {
+    await api().DeleteLocal(picked);
+    await loadLocalView(state.localView.path);
+    notify(`已删除 ${picked.length} 项`);
+  } catch (err) {
+    await loadLocalView(state.localView.path);
+    notify('删除失败：' + err, true);
+  }
 }
 
 function openCopyMenu(anchor, source) {
@@ -4304,6 +4551,7 @@ async function openSettings() {
   document.getElementById('set-buffer').value = s.bufferSize || '';
   document.getElementById('set-transfers').value = s.maxConcurrentTransfers || 4;
   document.getElementById('set-streams').value = s.downloadStreams || 4;
+  document.getElementById('set-page-size').value = s.pageSize || 200;
   document.getElementById('set-autosize').checked = !!s.autoSizeEnabled;
   document.getElementById('set-autosize-delay').value = s.autoSizeDelay ?? 5;
   document.getElementById('set-autosize-interval').value = s.autoSizeInterval ?? 2;
@@ -4348,6 +4596,7 @@ async function saveSettings(closeAfter = false) {
     bufferSize: document.getElementById('set-buffer').value.trim(),
     maxConcurrentTransfers: parseInt(document.getElementById('set-transfers').value, 10) || 4,
     downloadStreams: Math.min(16, Math.max(1, parseInt(document.getElementById('set-streams').value, 10) || 4)),
+    pageSize: Math.min(2000, Math.max(20, parseInt(document.getElementById('set-page-size').value, 10) || 200)),
     autoSizeEnabled: document.getElementById('set-autosize').checked,
     autoSizeDelay: Math.min(60, Math.max(0, parseInt(document.getElementById('set-autosize-delay').value, 10) || 0)),
     autoSizeInterval: Math.min(60, Math.max(0, parseInt(document.getElementById('set-autosize-interval').value, 10) || 0)),

@@ -35,7 +35,7 @@ import (
 	"OssManager/internal/transfer"
 )
 
-const appVersion = "1.4.2"
+const appVersion = "1.4.3"
 
 func logf(format string, args ...interface{}) {
 	_ = os.MkdirAll(config.DataDir(), 0o755)
@@ -45,6 +45,16 @@ func logf(format string, args ...interface{}) {
 	}
 	defer f.Close()
 	fmt.Fprintf(f, "%s %s\n", time.Now().Format("2006-01-02 15:04:05"), fmt.Sprintf(format, args...))
+}
+
+// rotateLog 在日志超过上限时改名为 .1，避免长期运行无限增长。
+func rotateLog(path string, limit int64) {
+	info, err := os.Stat(path)
+	if err != nil || info.Size() < limit {
+		return
+	}
+	_ = os.Remove(path + ".1")
+	_ = os.Rename(path, path+".1")
 }
 
 // App 是 Wails 暴露给前端的后端。
@@ -64,6 +74,9 @@ func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 	a.settings = config.LoadSettings()
 	transfer.SetConcurrency(a.settings.MaxConcurrentTransfers)
+	// 日志轮转：调试日志长期运行会累积到十几 MB，启动时超限就改名为 .1。
+	rotateLog(filepath.Join(config.DataDir(), "go.log"), 2<<20)
+	rotateLog(filepath.Join(config.DataDir(), "rclone-lib.log"), 5<<20)
 	// rclone 库运行日志落盘：挂载会话断线、目录列表失败等错误此前静默丢失，无法排查。
 	log.Opt.File = filepath.Join(config.DataDir(), "rclone-lib.log")
 	// 两层都要设置：fs.Debugf 入口按 fs.Config.LogLevel 过滤，slog handler 按 SetLevel 过滤。
@@ -703,6 +716,27 @@ func (a *App) UploadPath(remoteDir, localPath string) error {
 	err = transfer.Upload(a.ctx, a.settings.RcloneConfig, localPath, remoteDir)
 	logf("UploadPath file %q -> %q err=%v", localPath, remoteDir, err)
 	return err
+}
+
+// DeleteLocal 批量删除本地文件或目录，用于此电脑页签的多选删除。
+func (a *App) DeleteLocal(paths []string) error {
+	if len(paths) == 0 {
+		return fmt.Errorf("没有要删除的项")
+	}
+	var problems []string
+	for _, path := range paths {
+		value := strings.TrimSpace(path)
+		if value == "" {
+			continue
+		}
+		if err := os.RemoveAll(value); err != nil && !os.IsNotExist(err) {
+			problems = append(problems, filepath.Base(value)+"："+err.Error())
+		}
+	}
+	if len(problems) > 0 {
+		return fmt.Errorf("%s", strings.Join(problems, "；"))
+	}
+	return nil
 }
 
 // OpenFolder 用文件管理器打开目录。
