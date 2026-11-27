@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -66,41 +67,59 @@ func runMountDaemon() {
 			}
 		}
 		// 挂载缺失的记录；失败后 30 秒重试，避免日志刷屏。
+		// 多个盘并行挂载：单个远端（如外网 VPS）连接超时不拖累其他盘符（Manager.Mount 并发安全）。
 		mounted := manager.List()
+		var wg sync.WaitGroup
+		var mu sync.Mutex // 保护 lastAttempt/lastProblem 两个 map
 		for drive, record := range desired {
 			if _, ok := mounted[drive]; ok {
 				continue
 			}
 			if mount.DrivePresent(drive) {
 				problem := "盘符被其他程序占用"
+				mu.Lock()
 				if lastProblem[drive] != problem {
 					daemonLogf("skip %s %s: %s", record.Remote, drive, problem)
 					lastProblem[drive] = problem
 				}
+				mu.Unlock()
 				continue
 			}
+			mu.Lock()
 			if last, ok := lastAttempt[drive]; ok && time.Since(last) < 30*time.Second {
+				mu.Unlock()
 				continue
 			}
 			lastAttempt[drive] = time.Now()
-			settings = config.LoadSettings()
-			options := mountOptionsFor(settings, record.Remote)
-			if record.VolumeName != "" {
-				options.VolumeName = record.VolumeName
-			} else {
-				options.VolumeName = config.RemoteName(record.Remote)
-			}
-			if err := manager.Mount(ctx, settings.RcloneConfig, record.Remote, drive, options); err != nil {
-				problem := err.Error()
-				if lastProblem[drive] != problem {
-					daemonLogf("mount %s %s err=%v", record.Remote, drive, err)
-					lastProblem[drive] = problem
+			mu.Unlock()
+			wg.Add(1)
+			go func(drive string, record config.MountRecord) {
+				defer wg.Done()
+				settings := config.LoadSettings()
+				options := mountOptionsFor(settings, record.Remote)
+				if record.VolumeName != "" {
+					options.VolumeName = record.VolumeName
+				} else {
+					options.VolumeName = config.RemoteName(record.Remote)
 				}
-			} else {
-				daemonLogf("mount %s %s ok volume=%s", record.Remote, drive, options.VolumeName)
-				delete(lastProblem, drive)
-			}
+				if err := manager.Mount(ctx, settings.RcloneConfig, record.Remote, drive, options); err != nil {
+					problem := err.Error()
+					mu.Lock()
+					if lastProblem[drive] != problem {
+						daemonLogf("mount %s %s err=%v", record.Remote, drive, err)
+						lastProblem[drive] = problem
+					}
+					mu.Unlock()
+				} else {
+					mu.Lock()
+					delete(lastProblem, drive)
+					mu.Unlock()
+					daemonLogf("mount %s %s ok volume=%s", record.Remote, drive, options.VolumeName)
+				}
+			}(drive, record)
 		}
+		// 等本轮并行挂载全部结束再做空闲判断，避免状态跨轮竞态。
+		wg.Wait()
 		// 没有挂载需求时进程自行退出，避免长期占着 exe。
 		if len(desired) == 0 && len(manager.List()) == 0 {
 			if time.Since(idleSince) > 60*time.Second {
