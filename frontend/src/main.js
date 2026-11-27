@@ -804,6 +804,8 @@ function renderShell() {
         <div><label>打开目录后延迟（秒）</label><input id="set-autosize-delay" type="number" min="0" max="60" /></div>
         <div><label>目录之间间隔（秒）</label><input id="set-autosize-interval" type="number" min="0" max="60" /></div>
       </div>
+      <h3>诊断</h3>
+      <label class="chk"><input type="checkbox" id="set-debug-log" /> 调试日志（rclone 详细日志，增长更快，重启后生效）</label>
       <h3>更新</h3>
       <label class="chk"><input type="checkbox" id="set-auto-update" /> 启动后自动检查更新，并在后台下载新版本</label>
       <div class="row">
@@ -4004,6 +4006,7 @@ async function openSettings() {
   document.getElementById('set-buffer').value = s.bufferSize || '';
   document.getElementById('set-transfers').value = s.maxConcurrentTransfers || 4;
   document.getElementById('set-streams').value = s.downloadStreams || 4;
+  document.getElementById('set-debug-log').checked = !!s.debugLog;
   document.getElementById('set-autosize').checked = !!s.autoSizeEnabled;
   document.getElementById('set-autosize-delay').value = s.autoSizeDelay ?? 5;
   document.getElementById('set-autosize-interval').value = s.autoSizeInterval ?? 2;
@@ -4049,6 +4052,7 @@ async function saveSettings(closeAfter = false) {
     maxConcurrentTransfers: parseInt(document.getElementById('set-transfers').value, 10) || 4,
     downloadStreams: Math.min(16, Math.max(1, parseInt(document.getElementById('set-streams').value, 10) || 4)),
     autoSizeEnabled: document.getElementById('set-autosize').checked,
+    debugLog: document.getElementById('set-debug-log').checked,
     autoSizeDelay: Math.min(60, Math.max(0, parseInt(document.getElementById('set-autosize-delay').value, 10) || 0)),
     autoSizeInterval: Math.min(60, Math.max(0, parseInt(document.getElementById('set-autosize-interval').value, 10) || 0)),
     downloadDirectory: document.getElementById('set-download-dir').value.trim(),

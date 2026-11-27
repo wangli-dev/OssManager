@@ -2,15 +2,18 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"mime"
 	"net/http"
+	neturl "net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+	goruntime "runtime"
 	"strings"
 	"sync"
 	"syscall"
@@ -47,6 +50,23 @@ func logf(format string, args ...interface{}) {
 	fmt.Fprintf(f, "%s %s\n", time.Now().Format("2006-01-02 15:04:05"), fmt.Sprintf(format, args...))
 }
 
+// tightenFileACL 把文件 ACL 收紧为仅当前用户与 SYSTEM 完全控制（去掉继承的 Everyone/Users），
+// 用于保护 ossManage.conf 等含明文密钥的配置；失败仅记日志，不阻断主流程。幂等，可重复执行。
+func tightenFileACL(path string) {
+	if path == "" || goruntime.GOOS != "windows" {
+		return
+	}
+	user := os.Getenv("USERDOMAIN") + "\\" + os.Getenv("USERNAME")
+	if user == "\\" {
+		return
+	}
+	// /inheritance:r 去掉继承权限，/grant:r 只授当前用户与 SYSTEM（*S-1-5-18 用 SID 避免本地化名称问题）。
+	out, err := exec.Command("icacls", path, "/inheritance:r", "/grant:r", user+":F", "*S-1-5-18:F").CombinedOutput()
+	if err != nil {
+		logf("tighten ACL %s err=%v out=%s", path, err, strings.TrimSpace(string(out)))
+	}
+}
+
 // App 是 Wails 暴露给前端的后端。
 type App struct {
 	ctx      context.Context
@@ -64,12 +84,22 @@ func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 	a.settings = config.LoadSettings()
 	transfer.SetConcurrency(a.settings.MaxConcurrentTransfers)
+	// 连接配置内含各连接明文 AK/SK，收紧为仅当前用户与 SYSTEM 可读，防同机其他账户窥探。
+	go tightenFileACL(a.settings.RcloneConfig)
 	// rclone 库运行日志落盘：挂载会话断线、目录列表失败等错误此前静默丢失，无法排查。
 	log.Opt.File = filepath.Join(config.DataDir(), "rclone-lib.log")
+	// 超 32MB 自动轮转为 rclone-lib.log.1，只保留一份（log 包内置 lumberjack，实测 Debug 级别一天涨 2MB+）。
+	log.Opt.MaxSize = 32 * fs.Mebi
+	log.Opt.MaxBackups = 1
 	// 两层都要设置：fs.Debugf 入口按 fs.Config.LogLevel 过滤，slog handler 按 SetLevel 过滤。
-	fs.GetConfig(ctx).LogLevel = fs.LogLevelDebug
+	// 默认 Info；设置页打开「调试日志」才是 Debug（重启后生效）。
+	level := fs.LogLevelInfo
+	if a.settings.DebugLog {
+		level = fs.LogLevelDebug
+	}
+	fs.GetConfig(ctx).LogLevel = level
 	log.InitLogging()
-	log.Handler.SetLevel(fs.LogLevelToSlog(fs.LogLevelDebug))
+	log.Handler.SetLevel(fs.LogLevelToSlog(level))
 	go a.restoreMounts()
 	go a.autoCheckUpdate()
 }
@@ -105,8 +135,49 @@ func (a *App) restoreMounts() {
 			logf("external mount %s %s pid=%d", entry.Remote, entry.Drive, entry.PID)
 		}
 	}
+	// 先顺序完成记录筛选、去重与 options 解析（selectMountTasks），再并行挂载：
+	// 单个远端（如外网 VPS）连接超时不拖累其他盘符的恢复（实测 H 盘 10s 超时会堵住 I/J/K/L）。
+	tasks := selectMountTasks(config.ReadMountRecords(), externalRemotes,
+		mount.DrivePresent, a.removeMountRecordByDrive, a.mountOptions, a.volumeLabel)
+	// 并行挂载：每个 Mount 都是独立 WinFsp 实例，日志走 slog 并发安全。
+	var wg sync.WaitGroup
+	for _, task := range tasks {
+		wg.Add(1)
+		go func(t mountTask) {
+			defer wg.Done()
+			if err := a.mounter.Mount(a.ctx, a.settings.RcloneConfig, t.remote, t.drive, t.options); err != nil {
+				logf("restore mount %s %s err=%v", t.remote, t.drive, err)
+				return
+			}
+			// 挂载成功后立即在进程内读一次目录：区分「进程内列表为空」与「外部读取侧问题」。
+			entries, readErr := os.ReadDir(t.drive + "\\")
+			logf("restore mount %s %s ok, in-proc readdir=%d err=%v", t.remote, t.drive, len(entries), readErr)
+			if len(entries) == 0 {
+				// vfs 目录为空时用 backend 直读对照：区分 backend 层与 fuse/vfs 层的问题。
+				items, listErr := rclonefs.List(a.ctx, a.settings.RcloneConfig, t.remote)
+				logf("restore mount %s backend list=%d err=%v", t.remote, len(items), listErr)
+			}
+		}(task)
+	}
+	wg.Wait()
+	runtime.EventsEmit(a.ctx, "mounts-changed")
+}
+
+// mountTask 是待恢复挂载的任务；options 在顺序段解析完，避免并行段访问连接配置文件。
+type mountTask struct {
+	drive   string
+	remote  string
+	options mount.Options
+}
+
+// selectMountTasks 顺序筛选挂载记录：按 remote 去重、跳过外部 rclone 进程已挂载的连接
+// （顺带清理旧记录）、跳过盘符已存在的记录；对需要恢复的记录解析挂载 options。
+func selectMountTasks(records []config.MountRecord, externalRemotes map[string]bool,
+	drivePresent func(string) bool, removeRecord func(string),
+	mountOptions func(string) mount.Options, volumeLabel func(string) string) []mountTask {
 	seen := make(map[string]bool)
-	for _, record := range config.ReadMountRecords() {
+	var tasks []mountTask
+	for _, record := range records {
 		// 记录已带完整 remote（连接名: 或 连接名:/路径），直接使用，不再二次补冒号。
 		remote := config.NormalizeRemote(record.Remote)
 		if remote == "" {
@@ -118,31 +189,20 @@ func (a *App) restoreMounts() {
 		seen[remote] = true
 		// 该连接已由独立 rclone 进程挂载时不再重复挂载，并清掉本程序的旧记录。
 		if externalRemotes[strings.ToLower(config.RemoteName(remote))] {
-			a.removeMountRecordByDrive(record.Drive)
+			removeRecord(record.Drive)
 			continue
 		}
-		if mount.DrivePresent(record.Drive) {
+		if drivePresent(record.Drive) {
 			continue
 		}
-		options := a.mountOptions(remote)
+		options := mountOptions(remote)
 		options.VolumeName = record.VolumeName
 		if options.VolumeName == "" {
-			options.VolumeName = a.volumeLabel(remote)
+			options.VolumeName = volumeLabel(remote)
 		}
-		if err := a.mounter.Mount(a.ctx, a.settings.RcloneConfig, remote, record.Drive, options); err != nil {
-			logf("restore mount %s %s err=%v", remote, record.Drive, err)
-		} else {
-			// 挂载成功后立即在进程内读一次目录：区分「进程内列表为空」与「外部读取侧问题」。
-			entries, readErr := os.ReadDir(record.Drive + "\\")
-			logf("restore mount %s %s ok, in-proc readdir=%d err=%v", remote, record.Drive, len(entries), readErr)
-			if len(entries) == 0 {
-				// vfs 目录为空时用 backend 直读对照：区分 backend 层与 fuse/vfs 层的问题。
-				items, listErr := rclonefs.List(a.ctx, a.settings.RcloneConfig, remote)
-				logf("restore mount %s backend list=%d err=%v", remote, len(items), listErr)
-			}
-		}
+		tasks = append(tasks, mountTask{drive: record.Drive, remote: remote, options: options})
 	}
-	runtime.EventsEmit(a.ctx, "mounts-changed")
+	return tasks
 }
 
 func (a *App) addMountRecord(remote, drive, volumeName string) {
@@ -1196,6 +1256,12 @@ func (a *App) DownloadUpdate(url, version string) error {
 	if url == "" {
 		return fmt.Errorf("没有可下载的更新包")
 	}
+	// 域名白名单：DownloadUpdate 是 Wails 绑定方法，URL 可被前端任意构造，
+	// 必须兑底防止任意来源的 exe 替换程序本体。
+	parsed, err := neturl.Parse(url)
+	if err != nil || !updateHostAllowed(parsed.Hostname()) {
+		return fmt.Errorf("更新包地址不受信任：%s", url)
+	}
 	client := &http.Client{Timeout: 30 * time.Minute}
 	response, err := client.Get(url)
 	if err != nil {
@@ -1224,6 +1290,11 @@ func (a *App) DownloadUpdate(url, version string) error {
 	if written < 1<<20 {
 		_ = os.Remove(tmp)
 		return fmt.Errorf("下载文件异常：只有 %d 字节", written)
+	}
+	// 完整性校验：上游 release 附 .sha256 时必须匹配，不匹配拒绝登记安装；未附（404）时跳过。
+	if err := verifyUpdateSHA256(client, url, tmp); err != nil {
+		_ = os.Remove(tmp)
+		return err
 	}
 	if err := os.Rename(tmp, target); err != nil {
 		_ = os.Remove(tmp)
@@ -1262,6 +1333,66 @@ func updateExePath() string {
 
 func updateMetaPath() string {
 	return filepath.Join(config.DataDir(), "update.json")
+}
+
+// updateHostWhitelist 是允许的更新包下载域名；release 下载会重定向到 GitHub 的 CDN 域，一并列入。
+var updateHostWhitelist = []string{
+	"github.com",
+	"objects.githubusercontent.com",
+	"release-assets.githubusercontent.com",
+}
+
+func updateHostAllowed(host string) bool {
+	host = strings.ToLower(host)
+	for _, item := range updateHostWhitelist {
+		if host == item {
+			return true
+		}
+	}
+	return false
+}
+
+// verifyUpdateSHA256 尝试下载更新包对应的 .sha256 并校验本地文件完整性；
+// 上游未附 .sha256（404）时跳过校验并记日志，其余失败一律拒绝安装。
+func verifyUpdateSHA256(client *http.Client, packageURL, local string) error {
+	sumURL := packageURL + ".sha256"
+	response, err := client.Get(sumURL)
+	if err != nil {
+		return fmt.Errorf("下载 .sha256 失败：%w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode == http.StatusNotFound {
+		// 上游未发布校验文件：仅剩域名白名单与最小尺寸两道防线。
+		logf("update sha256 not published, skip verify url=%s", sumURL)
+		return nil
+	}
+	if response.StatusCode != 200 {
+		return fmt.Errorf("获取 .sha256 失败：HTTP %d", response.StatusCode)
+	}
+	data, err := io.ReadAll(io.LimitReader(response.Body, 4<<10))
+	if err != nil {
+		return err
+	}
+	// 文件格式为 "<hex>  <文件名>"，取第一个字段。
+	fields := strings.Fields(string(data))
+	if len(fields) == 0 || len(fields[0]) != 64 {
+		return fmt.Errorf(".sha256 内容异常")
+	}
+	file, err := os.Open(local)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	hasher := sha256.New()
+	if _, err := io.Copy(hasher, file); err != nil {
+		return err
+	}
+	actual := fmt.Sprintf("%x", hasher.Sum(nil))
+	if actual != strings.ToLower(fields[0]) {
+		return fmt.Errorf("sha256 不匹配：期望 %s 实际 %s（已拒绝安装）", fields[0], actual)
+	}
+	logf("update sha256 verified")
+	return nil
 }
 
 // GetUpdateState 返回已下载的更新；update.json 与 update.exe 同时存在才算就绪。

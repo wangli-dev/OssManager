@@ -28,6 +28,8 @@ type Settings struct {
 	ServerModtimeRemotes   []string `json:"serverModtimeRemotes"`
 	// AutoUpdate 开启后启动时自动检查并在后台下载新版本，由用户点右上角按钮重启安装。
 	AutoUpdate bool `json:"autoUpdate"`
+	// DebugLog 开启后 rclone 库日志用 Debug 级别（排查问题用）；默认 Info，避免日志无限膨胀。
+	DebugLog bool `json:"debugLog"`
 }
 
 // Connection 是 rclone.conf 中一个连接的公开信息，不含密钥。

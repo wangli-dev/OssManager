@@ -34,7 +34,10 @@ export namespace config {
 	    autoSizeEnabled: boolean;
 	    autoSizeDelay: number;
 	    autoSizeInterval: number;
+	    startupView: string;
 	    serverModtimeRemotes: string[];
+	    autoUpdate: boolean;
+	    debugLog: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new Settings(source);
@@ -57,7 +60,10 @@ export namespace config {
 	        this.autoSizeEnabled = source["autoSizeEnabled"];
 	        this.autoSizeDelay = source["autoSizeDelay"];
 	        this.autoSizeInterval = source["autoSizeInterval"];
+	        this.startupView = source["startupView"];
 	        this.serverModtimeRemotes = source["serverModtimeRemotes"];
+	        this.autoUpdate = source["autoUpdate"];
+	        this.debugLog = source["debugLog"];
 	    }
 	}
 
@@ -126,6 +132,22 @@ export namespace local {
 	        this.modTime = source["modTime"];
 	    }
 	}
+	export class Share {
+	    remote: string;
+	    local: string;
+	    label: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new Share(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.remote = source["remote"];
+	        this.local = source["local"];
+	        this.label = source["label"];
+	    }
+	}
 
 }
 
@@ -149,6 +171,40 @@ export namespace main {
 	        this.configPath = source["configPath"];
 	        this.dataDir = source["dataDir"];
 	        this.logPath = source["logPath"];
+	    }
+	}
+	export class MountInfo {
+	    drive: string;
+	    volume: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new MountInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.drive = source["drive"];
+	        this.volume = source["volume"];
+	    }
+	}
+	export class PreviewData {
+	    name: string;
+	    mime: string;
+	    size: number;
+	    data: string;
+	    localPath: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new PreviewData(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.mime = source["mime"];
+	        this.size = source["size"];
+	        this.data = source["data"];
+	        this.localPath = source["localPath"];
 	    }
 	}
 	export class TextFile {
@@ -181,6 +237,26 @@ export namespace main {
 	        this.latest = source["latest"];
 	        this.url = source["url"];
 	        this.hasUpdate = source["hasUpdate"];
+	    }
+	}
+	export class UpdateState {
+	    ready: boolean;
+	    version: string;
+	    url: string;
+	    path: string;
+	    error: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new UpdateState(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.ready = source["ready"];
+	        this.version = source["version"];
+	        this.url = source["url"];
+	        this.path = source["path"];
+	        this.error = source["error"];
 	    }
 	}
 
@@ -293,6 +369,22 @@ export namespace remote {
 
 export namespace transfer {
 	
+	export class StatsSnapshot {
+	    upSpeed: number;
+	    downSpeed: number;
+	    active: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new StatsSnapshot(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.upSpeed = source["upSpeed"];
+	        this.downSpeed = source["downSpeed"];
+	        this.active = source["active"];
+	    }
+	}
 	export class Task {
 	    id: string;
 	    name: string;

@@ -9,11 +9,17 @@ import {config} from '../models';
 import {rclonefs} from '../models';
 import {local} from '../models';
 
+export function ApplyUpdate():Promise<void>;
+
 export function CheckUpdate():Promise<main.UpdateInfo>;
 
 export function ClearDownloadHistory():Promise<void>;
 
 export function ClearDownloadTasks():Promise<void>;
+
+export function CopyRemote(arg1:string,arg2:string):Promise<string>;
+
+export function CopyRemoteDir(arg1:string,arg2:string):Promise<string>;
 
 export function CopyRemoteToClipboard(arg1:string):Promise<string>;
 
@@ -35,7 +41,7 @@ export function DownloadHistory():Promise<Array<download.Record>>;
 
 export function DownloadTasks():Promise<Array<transfer.Task>>;
 
-export function DownloadUpdate(arg1:string):Promise<void>;
+export function DownloadUpdate(arg1:string,arg2:string):Promise<void>;
 
 export function DragOutFiles(arg1:Array<string>):Promise<string>;
 
@@ -53,9 +59,15 @@ export function GetConnection(arg1:string):Promise<remote.Definition>;
 
 export function GetLog():Promise<string>;
 
+export function GetMountInfo(arg1:string):Promise<main.MountInfo>;
+
 export function GetPolicy(arg1:string,arg2:string):Promise<string>;
 
 export function GetSettings():Promise<config.Settings>;
+
+export function GetUpdateState():Promise<main.UpdateState>;
+
+export function HomeDir():Promise<string>;
 
 export function ImportBundle(arg1:string):Promise<string>;
 
@@ -79,6 +91,8 @@ export function MountNetworkLocation(arg1:string,arg2:string,arg3:string):Promis
 
 export function Move(arg1:string,arg2:string):Promise<void>;
 
+export function NetworkShares():Promise<Array<local.Share>>;
+
 export function ObjectInfo(arg1:string):Promise<Record<string, string>>;
 
 export function OpenDataDir():Promise<void>;
@@ -91,11 +105,15 @@ export function PasteFromClipboard(arg1:string):Promise<string>;
 
 export function PickFile():Promise<string>;
 
+export function PickFiles():Promise<Array<string>>;
+
 export function PickFolder():Promise<string>;
 
 export function PickSaveFile(arg1:string):Promise<string>;
 
 export function Presign(arg1:string):Promise<string>;
+
+export function PreviewData(arg1:string):Promise<main.PreviewData>;
 
 export function PreviewRemote(arg1:string):Promise<string>;
 
@@ -103,7 +121,13 @@ export function PutPolicy(arg1:string,arg2:string,arg3:string):Promise<void>;
 
 export function ReadObjectText(arg1:string):Promise<main.TextFile>;
 
+export function RemapNetworkLocation(arg1:string,arg2:string):Promise<void>;
+
+export function RemoveDownload(arg1:string,arg2:boolean):Promise<void>;
+
 export function RenameConnection(arg1:string,arg2:string):Promise<void>;
+
+export function RevealInExplorer(arg1:string):Promise<void>;
 
 export function SaveConnection(arg1:remote.Definition,arg2:boolean):Promise<void>;
 
@@ -122,6 +146,10 @@ export function SetExpiry(arg1:string,arg2:number):Promise<void>;
 export function Size(arg1:string):Promise<string>;
 
 export function TestConnection(arg1:string):Promise<void>;
+
+export function TestConnectionInput(arg1:remote.Definition):Promise<void>;
+
+export function TransferStats():Promise<transfer.StatsSnapshot>;
 
 export function Unmount(arg1:string):Promise<void>;
 
