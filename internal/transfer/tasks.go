@@ -80,6 +80,7 @@ func (t *Task) SetTotal(size int64) {
 
 // AddBytes 累加已传输字节并返回累计值。
 func (t *Task) AddBytes(count int64) int64 {
+	downBytes.Add(count)
 	taskMu.Lock()
 	defer taskMu.Unlock()
 	t.Done += count

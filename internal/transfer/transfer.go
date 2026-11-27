@@ -18,6 +18,7 @@ import (
 	"github.com/rclone/rclone/fs/config"
 	"github.com/rclone/rclone/fs/config/configfile"
 	"github.com/rclone/rclone/fs/operations"
+	rsync "github.com/rclone/rclone/fs/sync"
 	"OssManager/internal/rclonefs"
 	rwalk "github.com/rclone/rclone/fs/walk"
 )
@@ -85,7 +86,7 @@ func DownloadFolder(ctx context.Context, confPath, remoteDir, localDir string) e
 			if err != nil {
 				return err
 			}
-			if _, err := operations.Copy(ctx, dstFs, nil, filepath.Base(relative), obj); err != nil {
+			if _, err := operations.Copy(ctx, dstFs, nil, filepath.Base(relative), countingObject{Object: obj, counter: &downBytes}); err != nil {
 				return err
 			}
 		}
@@ -157,7 +158,7 @@ func Download(ctx context.Context, confPath, remotePath, localDir string) (strin
 	if err != nil {
 		return "", err
 	}
-	if _, err := operations.Copy(ctx, dstFs, nil, name, srcObj); err != nil {
+	if _, err := operations.Copy(ctx, dstFs, nil, name, countingObject{Object: srcObj, counter: &downBytes}); err != nil {
 		return "", err
 	}
 	return filepath.Join(localDir, name), nil
@@ -183,7 +184,9 @@ func Upload(ctx context.Context, confPath, localPath, remoteDir string) error {
 	if err != nil {
 		return err
 	}
-	_, err = operations.Copy(ctx, dstFs, nil, filepath.Base(localPath), srcObj)
+	activeUploads.Add(1)
+	defer activeUploads.Add(-1)
+	_, err = operations.Copy(ctx, dstFs, nil, filepath.Base(localPath), countingObject{Object: srcObj, counter: &upBytes})
 	return err
 }
 
@@ -220,4 +223,39 @@ func UploadFolder(ctx context.Context, confPath, localDir, remoteRoot string) er
 		}
 		return Upload(ctx, confPath, path, target)
 	})
+}
+
+// CopyRemoteDir 把远程目录整体复制到另一个远程目录下（保留目录名），返回目标目录。
+func CopyRemoteDir(ctx context.Context, confPath, srcDir, dstRoot string) (string, error) {
+	if err := ensureConfig(confPath); err != nil {
+		return "", err
+	}
+	if rclonefs.BucketListRoot(confPath, dstRoot) {
+		return "", fmt.Errorf("S3 连接 %s 的根目录是桶列表，不能直接复制到根目录，请先进入某个桶", rclonefs.RemoteName(dstRoot))
+	}
+	source := strings.TrimRight(strings.TrimSpace(srcDir), "/")
+	name := source
+	if index := strings.LastIndex(source, "/"); index >= 0 {
+		name = source[index+1:]
+	} else if index := strings.Index(source, ":"); index >= 0 {
+		name = source[index+1:]
+	}
+	// 连接根目录或桶本身也能整体复制，名称取最后一段。
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "", fmt.Errorf("请选择要复制的目录")
+	}
+	target := strings.TrimSuffix(strings.TrimSpace(dstRoot), "/") + "/" + name
+	srcFs, err := rclonefs.NewFs(ctx, confPath, source)
+	if err != nil {
+		return "", err
+	}
+	dstFs, err := rclonefs.NewFs(ctx, confPath, target)
+	if err != nil {
+		return "", err
+	}
+	if err := rsync.CopyDir(ctx, dstFs, srcFs, false); err != nil {
+		return "", err
+	}
+	return target, nil
 }

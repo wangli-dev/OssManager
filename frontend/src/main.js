@@ -22,6 +22,10 @@ const state = {
   localTab: null,
   localView: { path: '', entries: [], error: '' },
   localMulti: new Set(),
+  home: '',
+  treeVisible: false,
+  favorites: [],
+  connSelected: '',
 };
 
 let dragName = null;
@@ -38,6 +42,10 @@ let localAnchor = -1;
 // 远程侧多标签：每个打开的连接保留独立会话（路径、列表、选中、错误、滚动位置）。
 const tabCache = {};
 const tabOrder = [];
+// 「此电脑」页签在完整页签栏中的位置；远程页签单独存放在 tabOrder。
+let localTabPos = 0;
+// 正在拖动的页签，用于拖动排序。
+let tabDragItem = null;
 
 function cacheOf(name) {
   if (!tabCache[name]) {
@@ -88,6 +96,7 @@ function saveSession() {
       view: state.view,
       localTab: state.localTab,
       localViewPath: state.localView.path,
+      localPos: localTabPos,
     }));
   } catch (err) { /* 存储失败不影响使用 */ }
 }
@@ -104,6 +113,9 @@ function restoreSession() {
     cached.path = tab.path || '';
     cached.loaded = false;
   });
+  // 恢复「此电脑」页签在标签栏中的位置；旧会话没有记录时排在远程页签之后。
+  if (Number.isInteger(data.localPos)) localTabPos = Math.max(0, Math.min(data.localPos, tabOrder.length));
+  else localTabPos = tabOrder.length;
   if (data.localTab && data.localTab.path) {
     const rawLabel = data.localTab.label || '';
     // 旧会话记录的是「本地文件」，统一改名为「此电脑」。
@@ -147,18 +159,39 @@ function bindWindowSize() {
   });
 }
 
+// fullTabList 返回包含「此电脑」页签在内的完整顺序，用于渲染与拖动排序。
+function fullTabList() {
+  const list = tabOrder.map((name) => ({ kind: 'remote', name }));
+  if (state.localTab) {
+    const pos = Math.max(0, Math.min(localTabPos, list.length));
+    list.splice(pos, 0, { kind: 'local' });
+  }
+  return list;
+}
+
+// applyTabLayout 把拖动后的完整顺序拆回远程页签数组与此电脑页签位置。
+function applyTabLayout(layout) {
+  tabOrder.length = 0;
+  layout.forEach((item, index) => {
+    if (item.kind === 'remote') tabOrder.push(item.name);
+    else localTabPos = index;
+  });
+  renderTabs();
+  saveSession();
+}
+
 function renderTabs() {
   const host = document.getElementById('tabs');
   if (!host) return;
-  let html = tabOrder.map((name) => {
-    const active = state.view !== 'local' && name === state.active;
-    const label = connLabel(name);
-    return `<div class="tab${active ? ' active' : ''}" data-name="${esc(name)}" title="${esc(label)}"><span class="tab-label">${esc(label)}</span><span class="tab-close" data-close="${esc(name)}" title="关闭">×</span></div>`;
+  let html = fullTabList().map((item) => {
+    if (item.kind === 'local') {
+      const active = state.view === 'local';
+      return `<div class="tab${active ? ' active' : ''}" data-local-tab="1" draggable="true" title="${esc(state.localTab.path)}"><span class="tab-label">${esc(state.localTab.label)}</span><span class="tab-close" data-close-local="1" title="关闭">${ICONS.close}</span></div>`;
+    }
+    const active = state.view !== 'local' && item.name === state.active;
+    const label = connLabel(item.name);
+    return `<div class="tab${active ? ' active' : ''}" data-name="${esc(item.name)}" draggable="true" title="${esc(label)}"><span class="tab-label">${esc(label)}</span><span class="tab-close" data-close="${esc(item.name)}" title="关闭">${ICONS.close}</span></div>`;
   }).join('');
-  if (state.localTab) {
-    const active = state.view === 'local';
-    html += `<div class="tab${active ? ' active' : ''}" data-local-tab="1" title="${esc(state.localTab.path)}"><span class="tab-label">${esc(state.localTab.label)}</span><span class="tab-close" data-close-local="1" title="关闭">×</span></div>`;
-  }
   html += '<button id="tab-add" class="tab-add" title="打开连接 / 新建连接">+</button>';
   host.innerHTML = html;
   host.querySelectorAll('.tab').forEach((node) => {
@@ -168,8 +201,29 @@ function renderTabs() {
       if (node.dataset.localTab) { activateLocalTab(); return; }
       openTab(node.dataset.name);
     };
+    // 拖动页签调整顺序：与拖入文件（上传/复制）互不干扰。
+    node.ondragstart = (e) => {
+      if (e.target.closest && e.target.closest('.tab-close')) { e.preventDefault(); return; }
+      tabDragItem = { kind: node.dataset.localTab ? 'local' : 'remote', name: node.dataset.name || '' };
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('application/x-oss-tab', '1');
+      node.classList.add('dragging');
+    };
+    node.ondragend = () => {
+      tabDragItem = null;
+      node.classList.remove('dragging');
+      host.querySelectorAll('.tab').forEach((item) => item.classList.remove('drop-target', 'drop-left', 'drop-right'));
+    };
     // 拖到页签：远程 → 复制到该页签；本地文件 → 上传到该页签。
     node.ondragover = (e) => {
+      if (e.dataTransfer.types.includes('application/x-oss-tab')) {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'move';
+        const rect = node.getBoundingClientRect();
+        node.classList.toggle('drop-left', e.clientX < rect.left + rect.width / 2);
+        node.classList.toggle('drop-right', e.clientX >= rect.left + rect.width / 2);
+        return;
+      }
       const types = e.dataTransfer.types;
       if (types.includes('application/x-oss-remote') || types.includes('application/x-oss-local')) {
         e.preventDefault();
@@ -177,8 +231,13 @@ function renderTabs() {
         node.classList.add('drop-target');
       }
     };
-    node.ondragleave = () => node.classList.remove('drop-target');
+    node.ondragleave = () => node.classList.remove('drop-target', 'drop-left', 'drop-right');
     node.ondrop = (e) => {
+      if (e.dataTransfer.types.includes('application/x-oss-tab')) {
+        e.preventDefault();
+        reorderTab(node, e);
+        return;
+      }
       e.preventDefault();
       node.classList.remove('drop-target');
       handleTabDrop(node, e);
@@ -187,6 +246,28 @@ function renderTabs() {
   document.getElementById('tab-add').onclick = (e) => { e.stopPropagation(); openTabAddMenu(e); };
   updateFileActions();
   saveSession();
+}
+
+// reorderTab 把正在拖动的页签插入目标页签之前或之后。
+function reorderTab(target, event) {
+  if (!tabDragItem) return;
+  const targetKind = target.dataset.localTab ? 'local' : 'remote';
+  if (tabDragItem.kind === targetKind && (targetKind === 'local' || tabDragItem.name === target.dataset.name)) return;
+  const layout = fullTabList();
+  const from = layout.findIndex((item) => item.kind === tabDragItem.kind
+    && (item.kind === 'local' || item.name === tabDragItem.name));
+  if (from < 0) return;
+  const [moved] = layout.splice(from, 1);
+  let to = layout.findIndex((item) => item.kind === (target.dataset.localTab ? 'local' : 'remote')
+    && (item.kind === 'local' || item.name === target.dataset.name));
+  if (to < 0) to = layout.length;
+  else {
+    const rect = target.getBoundingClientRect();
+    if (event.clientX >= rect.left + rect.width / 2) to += 1;
+  }
+  layout.splice(to, 0, moved);
+  tabDragItem = null;
+  applyTabLayout(layout);
 }
 
 // 上传/下载属于当前文件列表的操作，放在筛选行右侧；仅远程页签可用。
@@ -200,6 +281,7 @@ function updateFileActions() {
 
 // handleTabDrop 处理拖拽到页签：远程文件复制到远程页签或下载到此电脑，本地文件上传到远程页签。
 function handleTabDrop(node, event) {
+  if (event.dataTransfer.types.includes('application/x-oss-tab')) return;
   const targetName = node.dataset.name || '';
   const isLocalTab = !!node.dataset.localTab;
   const localPath = event.dataTransfer.getData('application/x-oss-local');
@@ -231,7 +313,7 @@ function openTabAddMenu(event) {
     action: () => openTab(conn.name),
   }));
   if (items.length) items.push({ separator: true });
-  items.push({ label: '此电脑…', action: () => openLocalTab(state.local.path || 'C:\\', '此电脑') });
+  items.push({ label: '此电脑…', action: () => (state.localTab ? activateLocalTab() : openLocalTab(state.home || state.local.path || 'C:\\', '此电脑')) });
   visibleShares().forEach((share) => {
     items.push({ label: `共享：${shareLabel(share)}`, action: () => openLocalTab(share.local || share.remote, shareLabel(share)) });
   });
@@ -300,6 +382,7 @@ function openTab(name) {
   toggleConnPopover(false);
   if (c.loaded) updateFooter();
   else loadEntries();
+  syncTree();
 }
 
 function closeTab(name) {
@@ -341,6 +424,31 @@ let menuEl;
 
 const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
+// 统一线性图标：16px 视口、1.3 描边，按钮与列表共用，避免 emoji 大小不一。
+const ICON_ATTR = 'class="svg-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"';
+const ICONS = {
+  tree: `<svg ${ICON_ATTR}><path d="M2.6 3.4h3.1M2.6 3.4v9.2M2.6 7.8h3.1M2.6 12.3h3.1"/><rect x="7" y="2" width="6.4" height="2.9" rx=".8"/><rect x="7" y="6.4" width="6.4" height="2.9" rx=".8"/><rect x="7" y="10.8" width="6.4" height="2.9" rx=".8"/></svg>`,
+  folder: `<svg ${ICON_ATTR}><path d="M1.9 3.5h4.1l1.5 1.6h6.6v7.4H1.9z"/></svg>`,
+  folderOpen: `<svg ${ICON_ATTR}><path d="M1.9 4.6V3.4h4l1.4 1.5h5.9v1.5"/><path d="M1.9 6.4h12.5l-1.3 6.1H3.1z"/></svg>`,
+  file: `<svg ${ICON_ATTR}><path d="M4.1 1.9h5l2.8 2.8v9.4H4.1z"/><path d="M9.1 1.9v2.8h2.8"/></svg>`,
+  drive: `<svg ${ICON_ATTR}><rect x="1.8" y="4.1" width="12.4" height="7.8" rx="1.4"/><path d="M4.2 9.8h.01M11.7 9.8h.01"/></svg>`,
+  up: `<svg ${ICON_ATTR}><path d="M8 12.8V3.4M4.3 7.1 8 3.4l3.7 3.7"/></svg>`,
+  refresh: `<svg ${ICON_ATTR}><path d="M12.9 8A4.9 4.9 0 1 1 11.5 4.4"/><path d="M13.1 2.7v3.2H9.9"/></svg>`,
+  upload: `<svg ${ICON_ATTR}><path d="M8 11.6V3.2M4.3 6.9 8 3.2l3.7 3.7"/><path d="M2.7 13.5h10.6"/></svg>`,
+  download: `<svg ${ICON_ATTR}><path d="M8 3.2v8.4M4.3 8 8 11.6 11.7 8"/><path d="M2.7 13.5h10.6"/></svg>`,
+  eye: `<svg ${ICON_ATTR}><path d="M1.7 8S4 4.3 8 4.3 14.3 8 14.3 8 12 11.7 8 11.7 1.7 8 1.7 8z"/><circle cx="8" cy="8" r="1.8"/></svg>`,
+  eyeOff: `<svg ${ICON_ATTR}><path d="M6.1 4.6A6.5 6.5 0 0 1 8 4.3c4 0 6.3 3.7 6.3 3.7a11 11 0 0 1-2 2.4M4.1 5.5A11 11 0 0 0 1.7 8S4 11.7 8 11.7c1 0 1.9-.2 2.7-.6"/><path d="M2.5 2.5l11 11"/></svg>`,
+  copy: `<svg ${ICON_ATTR}><rect x="5.2" y="5.2" width="8" height="8" rx="1.3"/><path d="M11 5.2V3.7c0-.8-.6-1.4-1.4-1.4H3.7c-.8 0-1.4.6-1.4 1.4v6c0 .8.6 1.4 1.4 1.4H5"/></svg>`,
+  info: `<svg ${ICON_ATTR}><circle cx="8" cy="8" r="6"/><path d="M8 7.3v3.5M8 5.1h.01"/></svg>`,
+  trash: `<svg ${ICON_ATTR}><path d="M2.6 4.6h10.8M6.2 4.6V2.9h3.6v1.7M4.2 4.6l.6 8.3h6.4l.6-8.3M6.6 7v3.5M9.4 7v3.5"/></svg>`,
+  chart: `<svg ${ICON_ATTR}><path d="M2.2 13.2V2.9M2.2 13.2h11.6"/><path d="M5.2 10.9V8.3M8 10.9V5.3M10.8 10.9V6.9"/></svg>`,
+  pin: `<svg ${ICON_ATTR}><path d="M8 14s4.1-3.8 4.1-6.9A4.1 4.1 0 0 0 3.9 7.1C3.9 10.2 8 14 8 14z"/><circle cx="8" cy="6.9" r="1.5"/></svg>`,
+  star: `<svg ${ICON_ATTR}><path d="M8 2.2l1.7 3.5 3.8.5-2.8 2.7.7 3.8L8 10.9l-3.4 1.8.7-3.8L2.5 6.2l3.8-.5z"/></svg>`,
+  starFill: `<svg class="svg-icon" viewBox="0 0 16 16" fill="currentColor" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" aria-hidden="true"><path d="M8 2.2l1.7 3.5 3.8.5-2.8 2.7.7 3.8L8 10.9l-3.4 1.8.7-3.8L2.5 6.2l3.8-.5z"/></svg>`,
+  plus: `<svg ${ICON_ATTR}><path d="M8 3.3v9.4M3.3 8h9.4"/></svg>`,
+  close: `<svg ${ICON_ATTR}><path d="M4.2 4.2l7.6 7.6M11.8 4.2l-7.6 7.6"/></svg>`,
+};
+
 // connLabel 返回连接在界面上显示的名称：优先 description，其次内部段名。
 function connLabel(name) {
   const conn = state.connections.find((item) => item.name === name);
@@ -348,7 +456,7 @@ function connLabel(name) {
 }
 
 // ===== 文件列表栏：标题、筛选、排序与列宽 =====
-const COL_CHECK = 24, COL_SIZE = 80, COL_TIME = 150, COL_OPS = 120, COL_NAME_MIN = 120, COL_NAME_MAX = 900;
+const COL_CHECK = 24, COL_SIZE = 80, COL_TIME = 150, COL_OPS = 130, COL_NAME_MIN = 120, COL_NAME_MAX = 900;
 
 function loadNameWidth() {
   const saved = parseInt(localStorage.getItem('ossmanager.nameWidth') || '', 10);
@@ -539,12 +647,15 @@ function renderShell() {
   app.innerHTML = `
     <header>
       <div class="header-side header-left">
-        <button id="conn-add" class="primary" title="新建连接 / 添加网络共享">新建</button>
+        <button id="conn-add" class="primary" title="新建连接">新建连接</button>
+        <button id="share-add" title="添加网络共享目录">新建共享</button>
       </div>
       <div class="header-center">
         <button id="conn-quick" class="conn-quick" title="选择连接" style="display:none">选择连接 ▾</button>
       </div>
       <div class="header-right">
+        <span id="speed-indicator" class="speed" style="display:none" title="当前上传 / 下载速度"></span>
+        <button id="update-install" class="primary update-ready" style="display:none" title="下载完成，重启并安装">重启安装</button>
         <button id="btn-autosize" class="chip" title="自动统计目录占用：关">统计占用</button>
         <button id="btn-transfer" title="传输记录">传输记录</button>
         <button id="btn-more">更多 ▾</button>
@@ -553,23 +664,30 @@ function renderShell() {
     <main>
       <div id="conn-handle-open" class="conn-handle open" title="展开连接栏" style="display:none">›</div>
       <aside id="conn-pane">
-        <div class="list-head"><span class="list-title">连接</span><span class="list-tools-inline"><button id="btn-refresh" title="刷新连接列表">⟳</button></span></div>
+        <div class="list-head"><span class="list-title">连接</span><span class="list-tools-inline"><button id="btn-refresh" title="刷新连接列表">${ICONS.refresh}</button></span></div>
         <div id="connections"></div>
+        <div class="fav-head" id="fav-head" style="display:none"><span>收藏</span></div>
+        <div id="favorites" style="display:none"></div>
         <div id="conn-handle" class="conn-handle" title="收起连接栏">‹</div>
       </aside>
       <div class="resizer" data-target="conn-pane" title="拖动调整宽度"></div>
+      <aside id="tree-pane" style="display:none">
+        <div class="list-head"><span class="list-title">目录树</span><span class="list-tools-inline"><button id="tree-refresh" title="刷新目录树">${ICONS.refresh}</button><button id="tree-close" title="关闭目录树">${ICONS.close}</button></span></div>
+        <div id="tree-body"></div>
+      </aside>
       <section class="files">
         <div class="tabbar">
           <div id="tabs"></div>
+          <div class="tab-tools">
+            <button id="btn-upload" class="icon-btn" title="上传文件（可多选）">${ICONS.upload}</button>
+            <button id="btn-download" class="icon-btn" title="下载选中的文件到默认目录（支持多选）">${ICONS.download}</button>
+          </div>
         </div>
         <div class="crumbs" id="crumbs">
           <div class="crumb-nav" id="crumb-nav"></div>
           <input id="filter-input" placeholder="筛选当前目录（名称包含关键字）" />
           <span id="filter-stat"></span>
-          <button id="btn-list-refresh" class="icon-btn" title="刷新当前目录">⟳</button>
-          <span class="tool-sep"></span>
-          <button id="btn-upload" class="icon-btn" title="上传文件（可多选）">⬆</button>
-          <button id="btn-download" class="icon-btn" title="下载选中的文件（支持多选）">⬇</button>
+          <button id="btn-list-refresh" class="icon-btn" title="刷新当前目录">${ICONS.refresh}</button>
         </div>
         <div id="entries"></div>
       </section>
@@ -591,10 +709,10 @@ function renderShell() {
       </select>
       <label>端点 / 主机</label><input id="edit-endpoint" />
       <label>账号 / Access Key</label><input id="edit-account" />
-      <label>密钥（可点击 👁 查看）</label>
+      <label>密钥（可点击右侧按钮查看）</label>
       <div class="secret-row">
         <input id="edit-secret" type="password" />
-        <button id="edit-secret-eye" type="button" title="显示/隐藏密钥">👁</button>
+        <button id="edit-secret-eye" type="button" title="显示/隐藏密钥">${ICONS.eye}</button>
       </div>
       <label>区域（可空）</label><input id="edit-region" />
       <h3 class="form-head">挂载</h3>
@@ -649,7 +767,7 @@ function renderShell() {
       </div>
     </dialog>
     <dialog id="settings-dialog" class="settings">
-      <h2>设置<button id="settings-x" class="dialog-x" title="关闭">✕</button></h2>
+      <h2>设置<button id="settings-x" class="dialog-x" title="关闭">${ICONS.close}</button></h2>
       <h3>启动</h3>
       <label>启动时显示</label>
       <select id="set-startup-view">
@@ -686,6 +804,12 @@ function renderShell() {
         <div><label>打开目录后延迟（秒）</label><input id="set-autosize-delay" type="number" min="0" max="60" /></div>
         <div><label>目录之间间隔（秒）</label><input id="set-autosize-interval" type="number" min="0" max="60" /></div>
       </div>
+      <h3>更新</h3>
+      <label class="chk"><input type="checkbox" id="set-auto-update" /> 启动后自动检查更新，并在后台下载新版本</label>
+      <div class="row">
+        <button id="set-check-update">立即检查更新</button>
+        <span id="set-update-state" class="hint"></span>
+      </div>
       <h3>配置迁移</h3>
       <div class="row">
         <button id="set-export-bundle">导出配置包…</button>
@@ -718,14 +842,6 @@ function renderShell() {
         <button id="share-unmount" class="danger">断开映射</button>
         <button id="share-cancel">取消</button>
         <button id="share-save" class="primary">保存</button>
-      </div>
-    </dialog>
-    <dialog id="choose-dialog">
-      <h2 id="choose-title">选择</h2>
-      <select id="choose-value"></select>
-      <div class="footer">
-        <button id="choose-cancel">取消</button>
-        <button id="choose-ok" class="primary">确定</button>
       </div>
     </dialog>
     <dialog id="input-dialog">
@@ -765,7 +881,7 @@ function renderShell() {
       <div class="footer"><button id="log-close" class="primary">关闭</button></div>
     </dialog>
     <dialog id="history-dialog">
-      <h2>传输记录 <span id="task-count" class="count"></span><button id="history-x" class="dialog-x" title="关闭">✕</button></h2>
+      <h2>传输记录 <span id="task-count" class="count"></span><button id="history-x" class="dialog-x" title="关闭">${ICONS.close}</button></h2>
       <div id="download-list" class="history-list"></div>
       <div class="footer">
         <button id="history-clear">清空记录</button>
@@ -802,8 +918,34 @@ function renderShell() {
         <button id="net-ok" class="primary">连接</button>
       </div>
     </dialog>
+    <dialog id="copy-dialog" class="copy">
+      <h2><span id="copy-title">复制到</span><button id="copy-x" class="dialog-x" title="关闭">${ICONS.close}</button></h2>
+      <label>目标位置</label>
+      <select id="copy-target-select"></select>
+      <div class="copy-bar">
+        <button id="copy-up" class="icon-btn" title="上级目录">${ICONS.up}</button>
+        <select id="copy-drive" class="drive-select" style="display:none"></select>
+        <span id="copy-path" class="copy-path"></span>
+        <button id="copy-new" class="icon-btn" title="新建文件夹">${ICONS.plus}</button>
+      </div>
+      <div id="copy-list" class="copy-list"></div>
+      <p class="hint" id="copy-hint">单击文件夹进入，确认后复制到当前目录。</p>
+      <div class="footer">
+        <button id="copy-cancel">取消</button>
+        <button id="copy-ok" class="primary">复制到此处</button>
+      </div>
+    </dialog>
+    <dialog id="preview-dialog" class="preview">
+      <h2><span id="preview-title">预览</span><button id="preview-x" class="dialog-x" title="关闭">${ICONS.close}</button></h2>
+      <div id="preview-body" class="preview-body"></div>
+      <div class="footer">
+        <button id="preview-copy">复制地址</button>
+        <button id="preview-system">用系统程序打开</button>
+        <button id="preview-close" class="primary">关闭</button>
+      </div>
+    </dialog>
     <dialog id="confirm-dialog" class="confirm">
-      <h2><span id="confirm-title">确认删除</span><button id="confirm-x" class="dialog-x" title="关闭">✕</button></h2>
+      <h2><span id="confirm-title">确认删除</span><button id="confirm-x" class="dialog-x" title="关闭">${ICONS.close}</button></h2>
       <p id="confirm-text" class="confirm-text"></p>
       <label class="chk" id="confirm-check-row"><input type="checkbox" id="confirm-check" /><span id="confirm-check-label"></span></label>
       <div class="footer">
@@ -813,17 +955,20 @@ function renderShell() {
     </dialog>
   `;
   statusEl = document.getElementById('status');
-  const openCreateMenu = (e) => {
-    e.stopPropagation(); // 防止冒泡到 document 的全局点击监听后立刻关闭菜单
-    const rect = e.currentTarget.getBoundingClientRect();
-    showMenu(rect.left, rect.bottom + 4, [
-      { label: '新建连接…', action: () => openEdit(null) },
-      { label: '添加网络共享…', action: openNetDialog },
+  // 状态栏右键可直接复制文本，避免依赖选中文字后再按 Ctrl+C。
+  statusEl.oncontextmenu = (event) => {
+    event.preventDefault();
+    showMenu(event.clientX, event.clientY, [
+      { label: '复制状态栏文本', action: () => { api().SetClipboard(statusEl.textContent); notify('状态栏文本已复制'); } },
     ]);
   };
-  document.getElementById('conn-add').onclick = openCreateMenu;
+  document.getElementById('conn-add').onclick = (e) => { e.stopPropagation(); openEdit(null); };
+  document.getElementById('share-add').onclick = (e) => { e.stopPropagation(); openNetDialog(); };
   document.getElementById('btn-autosize').onclick = toggleAutoSize;
   document.getElementById('btn-transfer').onclick = openHistory;
+  document.getElementById('update-install').onclick = installUpdate;
+  document.getElementById('tree-close').onclick = () => toggleTree(false);
+  document.getElementById('tree-refresh').onclick = () => { tree.key = ''; tree.nodes.clear(); syncTree(); };
   document.getElementById('conn-quick').onclick = (e) => {
     e.stopPropagation();
     toggleConnPopover();
@@ -854,14 +999,12 @@ function renderShell() {
   document.getElementById('net-cancel').onclick = () => document.getElementById('net-dialog').close();
   document.getElementById('net-ok').onclick = confirmNet;
   document.getElementById('about-close').onclick = () => document.getElementById('about-dialog').close();
-  document.getElementById('about-update').onclick = checkUpdate;
+  document.getElementById('about-update').onclick = () => checkUpdate(false);
   document.getElementById('mount-cancel').onclick = () => document.getElementById('mount-dialog').close();
   document.getElementById('mount-ok').onclick = confirmMount;
   document.getElementById('share-cancel').onclick = () => document.getElementById('share-dialog').close();
   document.getElementById('share-save').onclick = confirmShareEdit;
   document.getElementById('share-unmount').onclick = unmountShareFromDialog;
-  document.getElementById('choose-cancel').onclick = () => finishChoose(null);
-  document.getElementById('choose-ok').onclick = () => finishChoose(Number(document.getElementById('choose-value').value));
   document.getElementById('input-cancel').onclick = () => { document.getElementById('input-value').value = ''; document.getElementById('input-dialog').close(); };
   document.getElementById('input-ok').onclick = () => document.getElementById('input-dialog').close();
   document.getElementById('info-close').onclick = () => document.getElementById('info-dialog').close();
@@ -877,7 +1020,7 @@ function renderShell() {
     const eye = document.getElementById('edit-secret-eye');
     const show = input.type === 'password';
     input.type = show ? 'text' : 'password';
-    eye.textContent = show ? '🙈' : '👁';
+    eye.innerHTML = show ? ICONS.eyeOff : ICONS.eye;
   };
   document.getElementById('policy-cancel').onclick = () => document.getElementById('policy-dialog').close();
   document.getElementById('policy-save').onclick = savePolicy;
@@ -894,6 +1037,22 @@ function renderShell() {
   document.getElementById('confirm-dialog').addEventListener('cancel', (e) => { e.preventDefault(); finishConfirm(false); });
   document.getElementById('set-export-bundle').onclick = exportBundle;
   document.getElementById('set-import-bundle').onclick = importBundle;
+  document.getElementById('set-check-update').onclick = () => checkUpdate(false);
+  document.getElementById('copy-x').onclick = closeCopyDialog;
+  document.getElementById('copy-cancel').onclick = closeCopyDialog;
+  document.getElementById('copy-up').onclick = copyUp;
+  document.getElementById('copy-new').onclick = createCopyDir;
+  document.getElementById('copy-ok').onclick = confirmCopy;
+  document.getElementById('copy-dialog').addEventListener('close', () => { copyState = null; });
+  document.getElementById('preview-x').onclick = () => document.getElementById('preview-dialog').close();
+  document.getElementById('preview-close').onclick = () => document.getElementById('preview-dialog').close();
+  document.getElementById('preview-copy').onclick = copyPreviewAddress;
+  document.getElementById('preview-system').onclick = openPreviewInSystem;
+  document.getElementById('preview-dialog').addEventListener('close', cleanupPreview);
+  document.getElementById('settings-dialog').addEventListener('close', () => {
+    const stateEl = document.getElementById('set-update-state');
+    if (stateEl) stateEl.textContent = '';
+  });
 }
 
 async function boot() {
@@ -901,15 +1060,22 @@ async function boot() {
   renderTabs();
   if (window.runtime && window.runtime.EventsOn) {
     window.runtime.EventsOn('mounts-changed', () => { refresh(); });
+    window.runtime.EventsOn('update-ready', (version) => {
+      refreshUpdateState();
+      notify('新版本 ' + (version || '') + ' 已下载，点击右上角「重启安装」完成更新');
+    });
   }
   if (window.runtime && window.runtime.OnFileDrop) {
     window.runtime.OnFileDrop((x, y, paths) => { uploadPaths(paths); });
   }
   try {
     state.settings = await api().GetSettings();
+    loadFavorites();
     applyTheme();
     await refresh();
     await initLocal();
+    state.treeVisible = localStorage.getItem('ossmanager.treeVisible') === '1';
+    toggleTree(state.treeVisible);
     restoreWindowSize();
     bindWindowSize();
     // 启动时展示连接列表；之后由用户通过边缘手柄收起。
@@ -918,6 +1084,12 @@ async function boot() {
     if (state.settings && state.settings.startupView === 'last') restoreSession();
     sessionReady = true;
     saveSession();
+    startSpeedPoll();
+    await refreshUpdateState();
+    // 自动更新只在启动后延迟执行，避免与首次目录加载抢带宽。
+    if (state.settings && state.settings.autoUpdate) {
+      setTimeout(() => checkUpdate(true), 6000);
+    }
   } catch (err) { setStatus('启动失败：' + err, true); }
 }
 
@@ -936,7 +1108,7 @@ async function refresh() {
     pruneTabs(new Set(state.connections.map((c) => c.name)));
     renderConnections();
     renderEntries();
-    setStatus(`共 ${state.connections.length} 个连接`);
+    if (!state.active && state.view !== 'local') setStatus(`共 ${state.connections.length} 个连接`);
   } catch (err) { setStatus('读取连接失败：' + err, true); }
 }
 
@@ -990,30 +1162,188 @@ async function renameShare(share) {
   renderConnections();
 }
 
+// ===== 目录收藏：保存常用远程/本地目录，显示在连接栏底部 =====
+const FAV_KEY = 'ossmanager.favorites';
+
+function loadFavorites() {
+  try {
+    const list = JSON.parse(localStorage.getItem(FAV_KEY) || '[]');
+    state.favorites = Array.isArray(list) ? list.filter((item) => item && item.path !== undefined && (item.kind === 'local' || item.kind === 'remote')) : [];
+  } catch (err) { state.favorites = []; }
+  state.favorites.forEach((item) => {
+    if (!item.id) item.id = 'f' + Math.random().toString(36).slice(2, 10);
+  });
+}
+
+function saveFavorites() {
+  localStorage.setItem(FAV_KEY, JSON.stringify(state.favorites));
+}
+
+function favoriteKey(item) {
+  return item.kind === 'local'
+    ? 'local|' + String(item.path || '').toLowerCase()
+    : 'remote|' + String(item.name || '').toLowerCase() + '|' + String(item.path || '');
+}
+
+function favoriteLabel(item) {
+  if (item.kind === 'local') return item.path || '此电脑';
+  const label = connLabel(item.name);
+  return item.path ? `${label} / ${item.path}` : label;
+}
+
+function isFavorite(item) {
+  const key = favoriteKey(item);
+  return state.favorites.some((fav) => favoriteKey(fav) === key);
+}
+
+function currentFavoriteItem() {
+  if (state.view === 'local' && state.localTab) {
+    return { kind: 'local', path: state.localView.path || '' };
+  }
+  if (state.active) {
+    return { kind: 'remote', name: state.active, path: state.path || '' };
+  }
+  return null;
+}
+
+function updateFavoriteButton() {
+  const button = document.getElementById('btn-fav');
+  if (!button) return;
+  const item = currentFavoriteItem();
+  const on = !!item && isFavorite(item);
+  button.classList.toggle('active', on);
+  button.innerHTML = on ? ICONS.starFill : ICONS.star;
+  button.title = on ? '取消收藏当前目录' : '收藏当前目录';
+}
+
+function toggleFavorite() {
+  const item = currentFavoriteItem();
+  if (!item) { notify('请先打开一个目录', true); return; }
+  toggleFavoriteOf(item);
+}
+
+function toggleFavoriteOf(item) {
+  const key = favoriteKey(item);
+  const index = state.favorites.findIndex((fav) => favoriteKey(fav) === key);
+  if (index >= 0) {
+    state.favorites.splice(index, 1);
+    notify('已取消收藏：' + favoriteLabel(item));
+  } else {
+    state.favorites.unshift({ ...item, id: 'f' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6) });
+    notify('已收藏：' + favoriteLabel(item));
+  }
+  saveFavorites();
+  renderFavorites();
+  updateFavoriteButton();
+}
+
+function removeFavoriteById(id) {
+  const index = state.favorites.findIndex((fav) => fav.id === id);
+  if (index < 0) return;
+  const [removed] = state.favorites.splice(index, 1);
+  saveFavorites();
+  renderFavorites();
+  updateFavoriteButton();
+  notify('已移除收藏：' + favoriteLabel(removed));
+}
+
+function openFavorite(item) {
+  if (item.kind === 'local') {
+    if (state.localTab) {
+      state.view = 'local';
+      renderTabs();
+      loadLocalView(item.path);
+    } else {
+      openLocalTab(item.path, '此电脑');
+    }
+    return;
+  }
+  if (!state.connections.some((connection) => connection.name === item.name)) {
+    notify('连接已不存在：' + item.name, true);
+    return;
+  }
+  if (state.active !== item.name) openTab(item.name);
+  else state.view = 'remote';
+  navigateRemote(item.path || '');
+}
+
+function renderFavorites() {
+  const host = document.getElementById('favorites');
+  const head = document.getElementById('fav-head');
+  if (!host || !head) return;
+  const visible = state.favorites.filter((item) => item.kind === 'local'
+    || state.connections.some((connection) => connection.name === item.name));
+  if (!visible.length) {
+    head.style.display = 'none';
+    host.style.display = 'none';
+    host.innerHTML = '';
+    return;
+  }
+  head.style.display = 'flex';
+  host.style.display = '';
+  host.innerHTML = visible.map((item) => `<div class="fav" data-fav="${esc(item.id)}" title="${esc(favoriteLabel(item))}">
+      <span class="fav-star">${ICONS.starFill}</span>
+      <span class="fav-name">${esc(favoriteLabel(item))}</span>
+      <button class="fav-remove" data-remove="${esc(item.id)}" title="移除收藏">${ICONS.close}</button>
+    </div>`).join('');
+  host.querySelectorAll('.fav').forEach((row) => {
+    const item = visible.find((fav) => fav.id === row.dataset.fav);
+    if (!item) return;
+    row.onclick = (e) => { if (e.target.closest('.fav-remove')) return; openFavorite(item); };
+    row.oncontextmenu = (e) => {
+      e.preventDefault();
+      showMenu(e.clientX, e.clientY, [
+        { label: '打开', action: () => openFavorite(item) },
+        { label: '复制路径', action: () => {
+          const value = item.kind === 'local' ? item.path : item.name + ':' + (item.path || '');
+          api().SetClipboard(value);
+          notify('已复制：' + value);
+        } },
+        { separator: true },
+        { label: '移除收藏', danger: true, action: () => removeFavoriteById(item.id) },
+      ]);
+    };
+    const remove = row.querySelector('.fav-remove');
+    if (remove) remove.onclick = (e) => { e.stopPropagation(); removeFavoriteById(item.id); };
+  });
+}
+
 function connectionListHTML() {
-  const localRows = `<div class="conn local-entry" data-local="1" title="打开此电脑">
+  const localPath = state.localTab ? state.localTab.path : (state.local.path || '');
+  const localRows = `<div class="conn local-entry${state.connSelected === 'local' ? ' selected' : ''}" data-local="1" data-conn-key="local" title="双击打开此电脑">
       <span class="title"><span class="name">此电脑</span><span class="badge type">本地</span></span>
-      <span class="badge">${esc(state.local.path || '')}</span></div>`
-    + visibleShares().map((share) => `<div class="conn local-entry" data-share="${esc(share.remote)}" title="${esc(share.remote)}">
+      <span class="badge">${esc(localPath)}</span></div>`
+    + visibleShares().map((share) => `<div class="conn local-entry${state.connSelected === 'share:' + share.remote ? ' selected' : ''}" data-share="${esc(share.remote)}" data-conn-key="share:${esc(share.remote)}" title="双击打开 ${esc(share.remote)}">
       <span class="title"><span class="name">${esc(shareLabel(share))}</span><span class="badge type">网络</span></span>
       ${share.local ? `<span class="badge">${esc(share.local.replace(/\\$/, ''))}</span>` : ''}</div>`).join('');
   const connections = state.connections.map((c) => {
     const drive = mountDriveOf(c.name);
     const driveBadge = drive ? `<span class="badge mounted">${esc(drive)}</span>` : '';
     const active = state.view === 'remote' && state.active === c.name;
-    return `<div class="conn${active ? ' active' : ''}" data-name="${esc(c.name)}">
+    const selected = state.connSelected === 'remote:' + c.name;
+    return `<div class="conn${active ? ' active' : ''}${selected ? ' selected' : ''}" data-name="${esc(c.name)}" data-conn-key="remote:${esc(c.name)}" title="双击打开 ${esc(c.displayName || c.name)}">
       <span class="title"><span class="name" title="${esc(c.displayName || c.name)}">${esc(c.displayName || c.name)}</span><span class="badge type">${esc(c.type || '')}</span></span>
       ${driveBadge}</div>`;
   }).join('');
   return localRows + '<div class="conn-sep"></div>' + (connections || '<div class="empty">没有连接</div>');
 }
 
+// selectConnEntry 单击只选中，避免误触打开页签；双击才打开。
+function selectConnEntry(key) {
+  state.connSelected = key || '';
+  document.querySelectorAll('#connections .conn, #conn-popover-body .conn').forEach((node) => {
+    node.classList.toggle('selected', node.dataset.connKey === state.connSelected);
+  });
+}
+
 function bindConnectionList(host) {
   host.querySelectorAll('.conn.local-entry').forEach((node) => {
-    node.onclick = () => openLocalEntry(node);
+    node.onclick = () => selectConnEntry(node.dataset.connKey);
+    node.ondblclick = () => openLocalEntry(node);
     node.oncontextmenu = (e) => {
       const remote = node.dataset.share;
       e.preventDefault();
+      selectConnEntry(node.dataset.connKey);
       if (!remote) {
         showMenu(e.clientX, e.clientY, [
           { label: '打开此电脑', action: () => openLocalEntry(node) },
@@ -1036,7 +1366,8 @@ function bindConnectionList(host) {
     };
   });
   host.querySelectorAll('.conn[data-name]').forEach((node) => {
-    node.onclick = () => selectConnection(node.dataset.name);
+    node.onclick = () => selectConnEntry(node.dataset.connKey);
+    node.ondblclick = () => selectConnection(node.dataset.name);
     node.draggable = true;
     node.ondragstart = (e) => {
       dragName = node.dataset.name;
@@ -1063,6 +1394,7 @@ function bindConnectionList(host) {
     node.oncontextmenu = (e) => {
       e.preventDefault();
       const name = node.dataset.name;
+      selectConnEntry(node.dataset.connKey);
       showMenu(e.clientX, e.clientY, [
         { label: '编辑连接…', action: () => openEdit(name) },
         { label: '测试连接', action: () => testConnection(name) },
@@ -1080,6 +1412,7 @@ function renderConnections() {
   const host = document.getElementById('connections');
   host.innerHTML = connectionListHTML();
   bindConnectionList(host);
+  renderFavorites();
   renderConnQuick();
   if (document.getElementById('conn-popover').style.display !== 'none') refreshConnPopover();
 }
@@ -1148,17 +1481,22 @@ function openLocalEntry(node) {
   if (share) {
     const mapped = state.shares.find((item) => item.remote === share);
     const target = mapped || { remote: share, local: '' };
-    openLocalTab((mapped && mapped.local) || share, shareLabel(target));
-  } else {
-    openLocalTab(state.local.path || state.local.drives[0]?.root || 'C:\\', '此电脑');
+    const path = (mapped && mapped.local) || share;
+    // 已经打开同一个位置时直接切回，保留原来的目录。
+    if (state.localTab && state.localTab.path === path) activateLocalTab();
+    else openLocalTab(path, shareLabel(target));
+    return;
   }
-  toggleConnPopover(false);
+  // 「此电脑」页签已打开时切换回去，不重置之前浏览的目录。
+  if (state.localTab) { activateLocalTab(); return; }
+  openLocalTab(state.home || state.local.drives[0]?.root || 'C:\\', '此电脑');
 }
 
 // openLocalTab 打开本地目录页签；与远程页签共用标签栏与文件区。
 function openLocalTab(path, label) {
   saveActiveTab();
   cancelAutoSize();
+  if (!state.localTab) localTabPos = tabOrder.length;
   state.localTab = { path, label };
   state.view = 'local';
   state.selected = null;
@@ -1196,6 +1534,9 @@ function closeLocalTab() {
 async function loadLocalView(path) {
   state.localView.path = path;
   state.localMulti.clear();
+  // 记录到当前本地页签，切换页签往返时回到这里，而不是最初打开的目录。
+  if (state.localTab) state.localTab.path = path;
+  if (state.view === 'local') renderTabs();
   setStatus('正在读取 ' + path + ' …');
   try {
     state.localView.entries = (await api().ListLocal(path)) || [];
@@ -1206,6 +1547,7 @@ async function loadLocalView(path) {
   }
   if (state.view === 'local') renderEntries();
   saveSession();
+  syncTree();
 }
 
 function localViewUp() {
@@ -1221,24 +1563,7 @@ function renderLocalView() {
   crumbs.style.display = 'flex';
   updateAutoSizeButton();
   applyWindowTitle();
-  const nav = document.getElementById('crumb-nav');
-  const drives = state.local.drives || [];
-  const currentRoot = /^[A-Za-z]:[\\/]/.test(state.localView.path) ? state.localView.path.slice(0, 3) : '';
-  const driveOptions = drives.map((drive) => {
-    const root = drive.root;
-    const letter = root.charAt(0).toUpperCase();
-    const label = drive.label && drive.label !== letter ? `${root} ${drive.label}` : root;
-    const selected = root.toUpperCase() === currentRoot.toUpperCase() ? ' selected' : '';
-    return `<option value="${esc(root)}"${selected}>${esc(label)}</option>`;
-  }).join('');
-  const driveSelect = drives.length ? `<select id="local-view-drive" class="drive-select" title="选择磁盘">${driveOptions}</select>` : '';
-  nav.innerHTML = `<a href="#" id="local-view-up" title="上级目录">↑</a>${driveSelect}<span class="trail">${localCrumbTrail(state.localView.path)}</span>`;
-  document.getElementById('local-view-up').onclick = (e) => { e.preventDefault(); localViewUp(); };
-  const driveInput = document.getElementById('local-view-drive');
-  if (driveInput) driveInput.onchange = (e) => loadLocalView(e.target.value);
-  nav.querySelectorAll('a[data-path]').forEach((link) => {
-    link.onclick = (e) => { e.preventDefault(); loadLocalView(link.dataset.path); };
-  });
+  renderLocalCrumbs();
 
   const host = document.getElementById('entries');
   // 双击空白处返回上一级。
@@ -1258,7 +1583,7 @@ function renderLocalView() {
   const totalWidth = nameWidth + COL_CHECK + COL_SIZE + COL_TIME + COL_OPS;
   const rows = visible.map((entry, index) => {
     const full = joinLocal(state.localView.path, entry.name);
-    const icon = entry.isDir ? '📁' : '📄';
+    const icon = entry.isDir ? ICONS.folder : ICONS.file;
     const cls = entry.isDir ? 'dir' : 'file';
     const checked = state.localMulti.has(full);
     const size = entry.isDir ? '' : fmtSize(entry.size);
@@ -1267,7 +1592,7 @@ function renderLocalView() {
       <td class="name"><span class="icon">${icon}</span>${esc(entry.name)}</td>
       <td class="size">${esc(size)}</td>
       <td class="time">${esc(entry.modTime || '')}</td>
-      <td class="ops"><button id="local-upload-${index}" data-local-op="upload" title="上传到远程页签">⬆</button><button id="local-open-${index}" data-local-op="open" title="在资源管理器中打开">📂</button></td>
+      <td class="ops"><button id="local-upload-${index}" data-local-op="copy" title="复制到…">${ICONS.copy}</button><button id="local-open-${index}" data-local-op="open" title="在资源管理器中打开">${ICONS.folderOpen}</button></td>
     </tr>`;
   }).join('');
   const body = rows || `<tr><td colspan="5" class="empty">${keyword ? '没有匹配的条目' : '空目录'}</td></tr>`;
@@ -1328,12 +1653,9 @@ function renderLocalView() {
     row.ondblclick = () => { if (isDir) loadLocalView(full); else api().OpenFolder(full).catch(() => {}); };
     row.oncontextmenu = (e) => {
       e.preventDefault();
-      const picked = state.localMulti.size > 1 && state.localMulti.has(full)
-        ? Array.from(state.localMulti)
-        : [full];
       showMenu(e.clientX, e.clientY, [
         ...(isDir ? [{ label: '进入', action: () => loadLocalView(full) }] : []),
-        { label: picked.length > 1 ? `上传选中的 ${picked.length} 项…` : '上传到远程页签…', action: () => uploadPaths(picked, true) },
+        { label: '复制到', children: copyTargetItems(localCopySource(full)) },
         { separator: true },
         { label: '复制路径', action: () => { api().SetClipboard(full); notify('已复制：' + full); } },
         { label: '在资源管理器中打开', action: () => api().OpenFolder(isDir ? full : dirOf(full)).catch((err) => notify('打开失败：' + err, true)) },
@@ -1342,7 +1664,7 @@ function renderLocalView() {
     row.querySelectorAll('button[data-local-op]').forEach((button) => {
       button.onclick = (e) => {
         e.stopPropagation();
-        if (button.dataset.localOp === 'upload') uploadLocalPath(full);
+        if (button.dataset.localOp === 'copy') openCopyMenu(button, localCopySource(full));
         else api().OpenFolder(isDir ? full : dirOf(full)).catch((err) => notify('打开失败：' + err, true));
       };
     });
@@ -1546,8 +1868,8 @@ function renderEntries() {
       <div class="welcome">
         <h2>开始使用</h2>
         <ol>
-          <li>点击左上角「新建」创建连接，或从左侧连接列表中选择已有连接。</li>
-          <li>双击目录进入；列表右侧操作列可预览、下载或下载到其他页签。</li>
+          <li>点击左上角「新建连接」创建连接，或从左侧连接列表中选择已有连接。</li>
+          <li>双击目录进入；列表右侧操作列可预览、下载或复制到其他连接/此电脑。</li>
           <li>右键连接可挂载为本地盘符；右键文件可重命名、删除或复制下载链接。</li>
           <li>把文件拖到其他页签或「此电脑」可复制，拖入窗口可从资源管理器上传。</li>
         </ol>
@@ -1556,18 +1878,7 @@ function renderEntries() {
     document.getElementById('welcome-new').onclick = () => openEdit(null);
     return;
   }
-  const parts = state.path ? state.path.split('/').filter(Boolean) : [];
-  let trail = `<a href="#" data-path="">${esc(connLabel(state.active))}</a>`;
-  parts.forEach((part, index) => {
-    const target = parts.slice(0, index + 1).join('/');
-    trail += `<span class="sep">/</span><a href="#" data-path="${esc(target)}">${esc(part)}</a>`;
-  });
-  const nav = document.getElementById('crumb-nav');
-  nav.innerHTML = `<a href="#" id="go-up" title="上级目录">↑</a><span class="trail">${trail}</span>`;
-  document.getElementById('go-up').onclick = (e) => { e.preventDefault(); goUp(); };
-  nav.querySelectorAll('a[data-path]').forEach((link) => {
-    link.onclick = (e) => { e.preventDefault(); navigateRemote(link.dataset.path); };
-  });
+  renderRemoteCrumbs();
 
   const host = document.getElementById('entries');
   // 双击空白处返回上一级。
@@ -1585,11 +1896,11 @@ function renderEntries() {
   const arrow = (key) => (state.sort.key === key ? (state.sort.dir > 0 ? ' ▲' : ' ▼') : '');
   const rows = visible.map((en, index) => {
     const ops = en.isDir
-      ? `<button id="op-size-${index}" data-op="size" title="统计占用">📊</button><button id="op-delete-${index}" data-op="delete" class="danger-op" title="删除">🗑</button>`
-      : `<button id="op-preview-${index}" data-op="preview" title="预览">👁</button><button id="op-download-${index}" data-op="download" title="下载">⬇</button><button id="op-tolocal-${index}" data-op="tolocal" title="下载到…">⇥</button><button id="op-info-${index}" data-op="info" title="属性">ℹ</button><button id="op-delete-${index}" data-op="delete" class="danger-op" title="删除">🗑</button>`;
+      ? `<button id="op-copy-${index}" data-op="copy" title="复制到…">${ICONS.copy}</button><button id="op-size-${index}" data-op="size" title="统计占用">${ICONS.chart}</button><button id="op-delete-${index}" data-op="delete" class="danger-op" title="删除">${ICONS.trash}</button>`
+      : `<button id="op-preview-${index}" data-op="preview" title="预览">${ICONS.eye}</button><button id="op-download-${index}" data-op="download" title="下载">${ICONS.download}</button><button id="op-copy-${index}" data-op="copy" title="复制到…">${ICONS.copy}</button><button id="op-info-${index}" data-op="info" title="属性">${ICONS.info}</button><button id="op-delete-${index}" data-op="delete" class="danger-op" title="删除">${ICONS.trash}</button>`;
     const cls = en.isDir ? 'dir' : 'file';
     const checked = state.multi.has(en.name);
-    const icon = en.isDir ? '📁' : '📄';
+    const icon = en.isDir ? ICONS.folder : ICONS.file;
     const size = en.isDir ? (en.sizeComputed ? fmtSize(en.size) : '') : fmtSize(en.size);
     return `<tr class="row ${cls}${checked ? ' selected' : ''}" data-name="${esc(en.name)}" data-select-key="${esc(en.name)}" data-dir="${en.isDir}">
       <td class="check"><input type="checkbox" id="check-${index}" data-check="${esc(en.name)}"${checked ? ' checked' : ''} /></td>
@@ -1708,7 +2019,7 @@ function renderEntries() {
         else if (op === 'download') {
           if (state.multi.size > 1 && state.multi.has(name)) downloadSelected();
           else downloadEntry(name);
-        } else if (op === 'tolocal') openDownloadTargetMenu(button, name);
+        } else if (op === 'copy') openCopyMenu(button, remoteCopySource(name, row.dataset.dir === 'true'));
         else if (op === 'info') showInfo(remotePath);
         else if (op === 'link') copyLink(remotePath);
         else if (op === 'delete') deleteEntry(name, row.dataset.dir === 'true');
@@ -1727,8 +2038,7 @@ function renderEntries() {
       if (isDir) {
         items.push({ label: '进入', action: () => enterDir(name) });
         items.push({ label: '统计占用…', action: () => showSize(remotePath) });
-        items.push({ label: '下载目录…', action: () => downloadFolder(remotePath) });
-        items.push({ label: '下载目录到此电脑…', action: () => downloadFolderToTarget(remotePath) });
+        items.push({ label: '复制到', children: copyTargetItems(remoteCopySource(name, true)) });
         if (!state.path) {
           items.push({ separator: true });
           items.push({ label: '编辑桶策略…', action: () => openPolicy(name) });
@@ -1737,7 +2047,7 @@ function renderEntries() {
       } else {
         items.push({ label: '预览', action: () => previewEntry(remotePath) });
         items.push({ label: '下载…', action: () => (state.multi.size > 1 && state.multi.has(name) ? downloadSelected() : downloadEntry(name)) });
-        items.push({ label: '下载到', children: downloadTargetItems(name) });
+        items.push({ label: '复制到', children: copyTargetItems(remoteCopySource(name, false)) });
         items.push({ label: '编辑文本…', action: () => editText(remotePath) });
         items.push({ separator: true });
         items.push({ label: '复制下载链接（7 天）', action: () => copyLink(remotePath) });
@@ -1770,13 +2080,14 @@ function renderEntries() {
     if (!localPath) return;
     e.preventDefault();
     host.classList.remove('drop-target');
-    uploadLocalPath(localPath);
+    // 从「此电脑」拖到远程列表：直接上传到当前目录。
+    const paths = dragLocalPaths.length ? dragLocalPaths.slice() : [localPath];
+    uploadPathsTo(paths, state.active, state.active + ':' + state.path, connLabel(state.active) + ' / ' + state.path);
   };
   syncCheckboxes(host, state.multi, 'select-all');
 }
 
 // ===== 本地文件栏 =====
-const LOCAL_KEY = 'ossmanager.local.path';
 
 // refreshDrives 重新读取盘符列表（含映射的网络盘），供此电脑页签使用。
 async function refreshDrives() {
@@ -1787,10 +2098,9 @@ async function refreshDrives() {
 
 async function initLocal() {
   await refreshDrives();
-  const saved = localStorage.getItem(LOCAL_KEY) || '';
-  const preset = (state.settings && state.settings.downloadDirectory) || '';
-  const first = state.local.drives[0] ? state.local.drives[0].root : 'C:\\';
-  state.local.path = saved || preset || first;
+  try { state.home = (await api().HomeDir()) || ''; } catch (err) { state.home = ''; }
+  // 「此电脑」默认打开用户目录（文档/桌面所在位置），而不是程序下载目录。
+  state.local.path = state.home || state.local.drives[0]?.root || 'C:\\';
 }
 
 // splitLocalPath 把本地路径拆成根前缀与后续层级，用于面包屑。
@@ -1805,18 +2115,441 @@ function splitLocalPath(path) {
   return { base: value, rest: [] };
 }
 
-// localCrumbTrail 生成可点击的本地路径面包屑；盘符根目录已由下拉框显示，不再重复。
+// localCrumbTrail 生成可点击的本地路径面包屑；盘符根目录由左侧下拉显示，不再重复。
 function localCrumbTrail(path) {
   const { base, rest } = splitLocalPath(path);
   const driveRoot = /^[A-Za-z]:[\\/]?$/.test(base);
   let accumulated = base;
-  let html = driveRoot ? '' : `<a href="#" data-path="${esc(base)}">${esc(base)}</a>`;
-  rest.forEach((part, index) => {
-    accumulated = accumulated.replace(/[\\/]$/, '') + '\\' + part;
-    const sep = driveRoot && index === 0 ? '' : '<span class="sep">›</span>';
-    html += `${sep}<a href="#" data-path="${esc(accumulated)}">${esc(part)}</a>`;
+  const segments = rest.map((part) => {
+    accumulated = joinLocal(accumulated, part);
+    return { name: part, path: accumulated };
   });
-  return html;
+  const links = [];
+  if (!driveRoot) links.push(crumbLink(base, base));
+  if (segments.length > 4) {
+    links.push('<a href="#" class="elide" id="local-crumb-elide" title="显示被省略的层级">…</a>');
+    const tail = segments.slice(-2);
+    links.push(crumbLink(tail[0].name, tail[0].path));
+    links.push(crumbLink(tail[1].name, tail[1].path, true));
+  } else {
+    segments.forEach((segment, index) => {
+      links.push(crumbLink(segment.name, segment.path, index === segments.length - 1));
+    });
+  }
+  if (!links.length) links.push(crumbLink(base, base, true));
+  return links.join('<span class="sep">/</span>');
+}
+
+// ===== 路径栏：目录树按钮、地址编辑与省略 =====
+function crumbLink(label, path, current = false) {
+  return `<a href="#" data-path="${esc(path)}"${current ? ' class="current"' : ''}>${esc(label)}</a>`;
+}
+
+function treeButtonHTML() {
+  return `<button id="btn-tree" class="icon-btn${state.treeVisible ? ' active' : ''}" title="显示/隐藏目录树">${ICONS.tree}</button>
+    <button id="btn-fav" class="icon-btn" title="收藏当前目录">${ICONS.star}</button>`;
+}
+
+function bindTreeButton() {
+  const button = document.getElementById('btn-tree');
+  if (button) button.onclick = (e) => { e.preventDefault(); e.stopPropagation(); toggleTree(); };
+  const favButton = document.getElementById('btn-fav');
+  if (favButton) favButton.onclick = (e) => { e.preventDefault(); e.stopPropagation(); toggleFavorite(); };
+  updateFavoriteButton();
+}
+
+function showMenuAt(anchor, items) {
+  const rect = anchor.getBoundingClientRect();
+  showMenu(rect.left, rect.bottom + 4, items.length ? items : [{ label: '没有更多层级' }]);
+}
+
+function renderRemoteCrumbs() {
+  const parts = state.path ? state.path.split('/').filter(Boolean) : [];
+  const rootLabel = connLabel(state.active);
+  let trail = crumbLink(rootLabel, '', !parts.length);
+  if (parts.length > 4) {
+    trail += '<span class="sep">/</span><a href="#" class="elide" id="crumb-elide" title="显示被省略的路径">…</a>';
+    parts.slice(-2).forEach((part, index) => {
+      const position = parts.length - 2 + index;
+      trail += '<span class="sep">/</span>' + crumbLink(part, parts.slice(0, position + 1).join('/'), index === 1);
+    });
+  } else {
+    parts.forEach((part, index) => {
+      trail += '<span class="sep">/</span>' + crumbLink(part, parts.slice(0, index + 1).join('/'), index === parts.length - 1);
+    });
+  }
+  const full = state.active + ':' + state.path;
+  const nav = document.getElementById('crumb-nav');
+  nav.innerHTML = `${treeButtonHTML()}<a href="#" id="go-up" title="上级目录">${ICONS.up}</a>
+    <span class="pathbar" title="${esc(full)}（点击编辑地址）">
+      <span class="path-icon">${ICONS.folder}</span>
+      <span class="trail">${trail}</span>
+      <input id="path-input" class="path-input" style="display:none" />
+    </span>`;
+  document.getElementById('go-up').onclick = (e) => { e.preventDefault(); goUp(); };
+  nav.querySelectorAll('a[data-path]').forEach((link) => {
+    link.onclick = (e) => { e.preventDefault(); e.stopPropagation(); navigateRemote(link.dataset.path); };
+  });
+  bindTreeButton();
+  const elide = document.getElementById('crumb-elide');
+  if (elide) {
+    elide.onclick = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const hidden = parts.slice(0, Math.max(0, parts.length - 2));
+      showMenuAt(elide, hidden.map((part, index) => {
+        const target = parts.slice(0, index + 1).join('/');
+        return { label: part, action: () => navigateRemote(target) };
+      }));
+    };
+  }
+  bindPathBar({
+    value: () => full,
+    apply: applyRemoteAddress,
+    copy: () => { api().SetClipboard(full); notify('已复制：' + full); },
+  });
+}
+
+function renderLocalCrumbs() {
+  const nav = document.getElementById('crumb-nav');
+  const drives = state.local.drives || [];
+  const currentRoot = /^[A-Za-z]:[\\/]/.test(state.localView.path) ? state.localView.path.slice(0, 3) : '';
+  const driveOptions = drives.map((drive) => {
+    const root = drive.root;
+    const letter = root.charAt(0).toUpperCase();
+    const label = drive.label && drive.label !== letter ? `${root} ${drive.label}` : root;
+    const selected = root.toUpperCase() === currentRoot.toUpperCase() ? ' selected' : '';
+    return `<option value="${esc(root)}"${selected}>${esc(label)}</option>`;
+  }).join('');
+  const driveSelect = drives.length ? `<select id="local-view-drive" class="drive-select" title="选择磁盘">${driveOptions}</select>` : '';
+  nav.innerHTML = `${treeButtonHTML()}<a href="#" id="local-view-up" title="上级目录">${ICONS.up}</a>${driveSelect}
+    <span class="pathbar" title="${esc(state.localView.path)}（点击编辑地址）">
+      <span class="path-icon">${ICONS.folder}</span>
+      <span class="trail">${localCrumbTrail(state.localView.path)}</span>
+      <input id="path-input" class="path-input" style="display:none" />
+    </span>`;
+  document.getElementById('local-view-up').onclick = (e) => { e.preventDefault(); localViewUp(); };
+  const driveInput = document.getElementById('local-view-drive');
+  if (driveInput) driveInput.onchange = (e) => loadLocalView(e.target.value);
+  nav.querySelectorAll('a[data-path]').forEach((link) => {
+    link.onclick = (e) => { e.preventDefault(); e.stopPropagation(); loadLocalView(link.dataset.path); };
+  });
+  bindTreeButton();
+  const elide = document.getElementById('local-crumb-elide');
+  if (elide) {
+    elide.onclick = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const { base, rest } = splitLocalPath(state.localView.path);
+      const hidden = rest.slice(0, Math.max(0, rest.length - 2));
+      let accumulated = base;
+      showMenuAt(elide, hidden.map((part) => {
+        accumulated = joinLocal(accumulated, part);
+        const value = accumulated;
+        return { label: part, action: () => loadLocalView(value) };
+      }));
+    };
+  }
+  bindPathBar({
+    value: () => state.localView.path,
+    apply: (raw) => { if (raw) loadLocalView(raw); },
+    copy: () => { api().SetClipboard(state.localView.path); notify('已复制：' + state.localView.path); },
+  });
+}
+
+// bindPathBar 点击整条地址栏进入编辑并全选，Enter 跳转、Esc 取消；右键可复制完整地址。
+function bindPathBar({ value, apply, copy }) {
+  const bar = document.querySelector('#crumb-nav .pathbar');
+  const input = document.getElementById('path-input');
+  const trail = document.querySelector('#crumb-nav .pathbar .trail');
+  if (!bar || !input || !trail) return;
+  let handled = false;
+  const close = () => { input.style.display = 'none'; trail.style.display = ''; input.value = ''; };
+  const enterEdit = () => {
+    if (input.style.display !== 'none') return;
+    trail.style.display = 'none';
+    input.style.display = '';
+    input.value = value();
+    input.focus();
+    input.select();
+  };
+  bar.onclick = (e) => {
+    if (e.target.closest('a') || e.target === input) return;
+    e.preventDefault();
+    enterEdit();
+  };
+  bar.oncontextmenu = (e) => {
+    e.preventDefault();
+    showMenu(e.clientX, e.clientY, [
+      { label: '编辑地址', action: enterEdit },
+      { label: '复制地址', action: copy },
+    ]);
+  };
+  input.onkeydown = (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      handled = true;
+      const raw = input.value.trim();
+      close();
+      apply(raw);
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      handled = true;
+      close();
+    }
+  };
+  input.onblur = () => {
+    if (handled) { handled = false; return; }
+    close();
+  };
+}
+
+// applyRemoteAddress 解析地址栏输入：支持连接:路径，也支持在当前连接内只填路径。
+function applyRemoteAddress(raw) {
+  const value = String(raw || '').trim();
+  if (!value) return;
+  const colon = value.indexOf(':');
+  if (colon > 0) {
+    const name = value.slice(0, colon);
+    const rest = value.slice(colon + 1).replace(/^\/+/, '').replace(/\/+$/, '');
+    if (state.connections.some((connection) => connection.name === name)) {
+      if (name !== state.active) openTab(name);
+      navigateRemote(rest);
+      return;
+    }
+  }
+  navigateRemote(value.replace(/^\/+/, '').replace(/\/+$/, ''));
+}
+
+// ===== 目录树：按需加载子目录，点击节点跳转 =====
+const tree = { key: '', nodes: new Map(), current: '' };
+let treeToken = 0;
+
+function treeNode(path, name, options = {}) {
+  let node = tree.nodes.get(path);
+  if (!node) {
+    node = {
+      path,
+      name: name || path,
+      display: options.display || name || path,
+      isDrive: !!options.isDrive,
+      expanded: false,
+      loading: false,
+      loaded: false,
+      children: [],
+    };
+    tree.nodes.set(path, node);
+  }
+  return node;
+}
+
+// findTreeNode 按路径查找节点；本地盘符大小写不敏感。
+function findTreeNode(path) {
+  if (tree.nodes.has(path)) return tree.nodes.get(path);
+  const lower = String(path).toLowerCase();
+  for (const [key, node] of tree.nodes) {
+    if (String(key).toLowerCase() === lower) return node;
+  }
+  return null;
+}
+
+function treeKey() {
+  if (state.view === 'local') return state.localTab ? 'local' : '';
+  return state.active ? 'remote:' + state.active : '';
+}
+
+// treeFavoriteItem 把树节点转成收藏项：远程保存连接名与相对路径，本地保存绝对路径。
+function treeFavoriteItem(node) {
+  if (tree.key === 'local') {
+    return { kind: 'local', path: node.path || state.home || 'C:\\' };
+  }
+  return { kind: 'remote', name: tree.key.slice('remote:'.length), path: node.path || '' };
+}
+
+async function treeInitRoot(key) {
+  tree.key = key;
+  tree.nodes.clear();
+  tree.current = '';
+  if (key === 'local') {
+    const root = treeNode('', '此电脑');
+    root.loaded = true;
+    root.expanded = true;
+    root.children = (state.local.drives || []).map((drive) => {
+      const letter = drive.root.charAt(0).toUpperCase();
+      const label = drive.label && drive.label !== letter ? `${drive.root} ${drive.label}` : drive.root;
+      return treeNode(drive.root, drive.root, { display: label, isDrive: true });
+    });
+  } else {
+    const name = key.slice('remote:'.length);
+    const root = treeNode('', name);
+    root.display = '根目录';
+    root.expanded = true;
+    await treeLoadChildren(root);
+  }
+  renderTree();
+}
+
+async function treeLoadChildren(node) {
+  if (node.loading || node.loaded) return;
+  node.loading = true;
+  renderTree();
+  try {
+    let dirs = [];
+    if (tree.key === 'local') {
+      dirs = ((await api().ListLocal(node.path)) || []).filter((entry) => entry.isDir);
+      node.children = dirs.map((entry) => treeNode(joinLocal(node.path, entry.name), entry.name));
+    } else {
+      const name = tree.key.slice('remote:'.length);
+      dirs = ((await api().List(name + ':' + node.path)) || []).filter((entry) => entry.isDir);
+      node.children = dirs.map((entry) => treeNode(node.path ? node.path + '/' + entry.name : entry.name, entry.name));
+    }
+    node.loaded = true;
+  } catch (err) {
+    node.children = [];
+    node.loaded = true;
+  }
+  node.loading = false;
+  renderTree();
+}
+
+function treeNodeHTML(node, depth) {
+  const isLeaf = node.loaded && !node.children.length && !node.isDrive;
+  const marker = node.loading ? '⋯' : (node.expanded ? '▾' : (isLeaf ? '' : '▸'));
+  const children = node.expanded ? node.children.map((child) => treeNodeHTML(child, depth + 1)).join('') : '';
+  const current = node.path === tree.current ? ' current' : '';
+  const title = node.path || node.display;
+  return `<div class="tree-node">
+    <div class="tree-row${current}" data-tree-path="${esc(node.path)}" style="padding-left:${8 + depth * 14}px">
+      <span class="tree-toggle">${marker}</span>
+      <span class="tree-icon">${node.isDrive ? ICONS.drive : ICONS.folder}</span>
+      <span class="tree-name" title="${esc(title)}">${esc(node.display)}</span>
+    </div>${children}
+  </div>`;
+}
+
+function renderTree() {
+  const body = document.getElementById('tree-body');
+  const pane = document.getElementById('tree-pane');
+  if (!body || !pane || pane.style.display === 'none') return;
+  if (!tree.key) { body.innerHTML = '<div class="empty">打开一个页签后显示目录树</div>'; return; }
+  const root = tree.nodes.get('');
+  if (!root) { body.innerHTML = ''; return; }
+  body.innerHTML = treeNodeHTML(root, 0);
+  body.querySelectorAll('.tree-row').forEach((row) => {
+    row.onclick = (event) => { event.stopPropagation(); handleTreeRow(row, event); };
+    row.oncontextmenu = (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const node = tree.nodes.get(row.dataset.treePath);
+      if (!node) return;
+      const item = treeFavoriteItem(node);
+      const on = isFavorite(item);
+      showMenu(event.clientX, event.clientY, [
+        { label: on ? '取消收藏此目录' : '收藏此目录', action: () => toggleFavoriteOf(item) },
+        { label: '复制路径', action: () => {
+          const value = item.kind === 'local' ? item.path : item.name + ':' + (item.path || '');
+          api().SetClipboard(value);
+          notify('已复制：' + value);
+        } },
+      ]);
+    };
+  });
+  const current = body.querySelector('.tree-row.current');
+  if (current) current.scrollIntoView({ block: 'nearest' });
+}
+
+async function handleTreeRow(row, event) {
+  const node = tree.nodes.get(row.dataset.treePath);
+  if (!node) return;
+  if (event.target.closest('.tree-toggle')) {
+    if (node.expanded) { node.expanded = false; renderTree(); return; }
+    if (!node.loaded) await treeLoadChildren(node);
+    node.expanded = true;
+    renderTree();
+    return;
+  }
+  if (!node.loaded) await treeLoadChildren(node);
+  node.expanded = true;
+  if (tree.key === 'local') {
+    const path = node.path || state.home || 'C:\\';
+    if (!state.localTab) { openLocalTab(path, '此电脑'); return; }
+    state.view = 'local';
+    renderTabs();
+    renderConnections();
+    showBrowseLoading(path);
+    loadLocalView(path);
+    return;
+  }
+  const name = tree.key.slice('remote:'.length);
+  if (!state.active || state.active !== name) openTab(name);
+  state.view = 'remote';
+  navigateRemote(node.path);
+}
+
+async function syncTree() {
+  if (!state.treeVisible) return;
+  const key = treeKey();
+  if (!key) { tree.key = ''; renderTree(); return; }
+  const token = ++treeToken;
+  if (tree.key !== key) await treeInitRoot(key);
+  if (token !== treeToken) return;
+  if (key === 'local') await treeRevealLocal(token);
+  else await treeRevealRemote(token);
+}
+
+async function treeRevealRemote(token) {
+  const root = tree.nodes.get('');
+  if (!root) return;
+  if (!root.loaded) await treeLoadChildren(root);
+  root.expanded = true;
+  if (token !== treeToken) return;
+  const parts = state.path ? state.path.split('/').filter(Boolean) : [];
+  let prefix = '';
+  for (const part of parts) {
+    prefix = prefix ? prefix + '/' + part : part;
+    const node = findTreeNode(prefix);
+    if (!node) break;
+    if (!node.loaded) await treeLoadChildren(node);
+    if (token !== treeToken) return;
+    node.expanded = true;
+  }
+  tree.current = state.path;
+  renderTree();
+}
+
+async function treeRevealLocal(token) {
+  const root = tree.nodes.get('');
+  if (!root) return;
+  root.expanded = true;
+  const path = state.localView.path;
+  const { base, rest } = splitLocalPath(path);
+  if (base && !root.children.some((node) => node.path.toUpperCase() === base.toUpperCase())) {
+    root.children.push(treeNode(base, base, { isDrive: true }));
+  }
+  let prefix = base;
+  const chain = [base];
+  rest.forEach((part) => { prefix = joinLocal(prefix, part); chain.push(prefix); });
+  for (const value of chain) {
+    if (token !== treeToken) return;
+    const node = findTreeNode(value);
+    if (!node) continue;
+    if (!node.loaded) await treeLoadChildren(node);
+    if (token !== treeToken) return;
+    node.expanded = true;
+  }
+  tree.current = path;
+  renderTree();
+}
+
+function toggleTree(force) {
+  state.treeVisible = force === undefined ? !state.treeVisible : !!force;
+  localStorage.setItem('ossmanager.treeVisible', state.treeVisible ? '1' : '0');
+  const pane = document.getElementById('tree-pane');
+  if (pane) pane.style.display = state.treeVisible ? '' : 'none';
+  // 目录树已列出磁盘，展开时不再占用路径栏宽度重复显示磁盘下拉。
+  document.body.classList.toggle('tree-open', state.treeVisible);
+  document.querySelectorAll('#btn-tree').forEach((node) => node.classList.toggle('active', state.treeVisible));
+  if (state.treeVisible) syncTree();
 }
 
 // bindResizers 让连接栏宽度可以拖动调整。
@@ -1868,25 +2601,6 @@ function dirOf(path) {
   return index > 0 ? value.slice(0, index) : value;
 }
 
-async function uploadLocalPath(full) {
-  const target = await chooseUploadTarget(true);
-  if (!target) return;
-  const remoteDir = target.name + ':' + target.path;
-  setStatus('正在上传 ' + full + ' 到 ' + target.label + ' …');
-  try {
-    await api().UploadPath(remoteDir, full);
-    await afterUpload(target);
-    notify('上传完成：' + target.label);
-  } catch (err) { notify('上传失败：' + err, true); }
-}
-
-// afterUpload 刷新目标页签；非当前页签只标记为待重新加载。
-async function afterUpload(target) {
-  if (target.name === state.active) { await loadEntries(); return; }
-  const cached = cacheOf(target.name);
-  cached.loaded = false;
-}
-
 function openNetDialog() {
   document.getElementById('net-path').value = '';
   document.getElementById('net-user').value = '';
@@ -1922,6 +2636,7 @@ function navigateRemote(path) {
     renderTabs();
   }
   loadEntries();
+  syncTree();
 }
 
 function enterDir(name) { navigateRemote(state.path ? state.path + '/' + name : name); }
@@ -2052,7 +2767,7 @@ async function openEdit(name) {
   const secretInput = document.getElementById('edit-secret');
   secretInput.type = 'password';
   secretInput.value = '';
-  document.getElementById('edit-secret-eye').textContent = '👁';
+  document.getElementById('edit-secret-eye').innerHTML = ICONS.eye;
   const fields = { 'edit-name': '', 'edit-endpoint': '', 'edit-account': '', 'edit-region': '', 'edit-volume': '' };
   Object.keys(fields).forEach((id) => { document.getElementById(id).value = fields[id]; });
   document.getElementById('edit-name').disabled = false;
@@ -2230,45 +2945,19 @@ document.addEventListener('keydown', (e) => {
   const ctrl = e.ctrlKey || e.metaKey;
   if (!ctrl) return;
   const key = e.key.toLowerCase();
-  if (key === 'c' && state.active) { e.preventDefault(); copySelected(); }
-  else if (key === 'v' && state.active) { e.preventDefault(); pasteInto(); }
+  if (key === 'c' && state.active && state.view === 'remote') {
+    const selection = window.getSelection();
+    const hasText = selection && !selection.isCollapsed && String(selection).trim().length > 0;
+    // 正在复制状态栏/路径文字、或没有任何文件被选中时，不拦截 Ctrl+C，交给浏览器复制文本。
+    if (hasText) return;
+    if (!state.multi.size && !state.selected) return;
+    e.preventDefault();
+    copySelected();
+  } else if (key === 'v' && state.active && state.view === 'remote') {
+    e.preventDefault();
+    pasteInto();
+  }
 });
-
-let chooseOptions = [];
-let chooseResolve = null;
-
-function finishChoose(index) {
-  const resolve = chooseResolve;
-  chooseResolve = null;
-  const dialog = document.getElementById('choose-dialog');
-  if (dialog.open) dialog.close();
-  if (resolve) resolve(index === null ? null : chooseOptions[index] || null);
-}
-
-// chooseOption 以模态框返回用户选中的选项。
-function chooseOption(title, options) {
-  return new Promise((resolve) => {
-    chooseOptions = options;
-    chooseResolve = resolve;
-    document.getElementById('choose-title').textContent = title;
-    document.getElementById('choose-value').innerHTML = options
-      .map((item, index) => `<option value="${index}">${esc(item.label)}</option>`).join('');
-    document.getElementById('choose-dialog').showModal();
-  });
-}
-
-// chooseUploadTarget 让用户选择上传到哪个已打开的远程页签；只有一个时默认使用，
-// force 为真时即使只有一个也弹窗确认（此电脑里的上传按钮需要明确目标）。
-async function chooseUploadTarget(force = false) {
-  const tabs = tabOrder.map((name) => {
-    const path = name === state.active ? state.path : (cacheOf(name).path || '');
-    const label = `${connLabel(name)} / ${path || '/'}`;
-    return { name, path, label };
-  });
-  if (!tabs.length) { notify('请先打开一个远程页签', true); return null; }
-  if (tabs.length === 1 && !force) return tabs[0];
-  return await chooseOption('上传到哪个页签', tabs);
-}
 
 function askInput(title, value) {
   return new Promise((resolve) => {
@@ -2282,10 +2971,90 @@ function askInput(title, value) {
   });
 }
 
+// ===== 在线预览：图片/文本/PDF/音视频在应用内打开，不支持的类型回退到系统程序 =====
+let previewState = null;
+let previewToken = 0;
+
 async function previewEntry(remotePath) {
-  setStatus('正在准备预览…');
-  try { const local = await api().PreviewRemote(remotePath); notify('已打开预览：' + local); }
-  catch (err) { notify('预览失败：' + err, true); }
+  const token = ++previewToken;
+  setStatus('正在准备在线预览…');
+  try {
+    const data = await api().PreviewData(remotePath);
+    if (token !== previewToken) return;
+    showPreview(data, remotePath);
+  } catch (err) {
+    if (token !== previewToken) return;
+    const message = String(err);
+    if (message.includes('较大')) {
+      const result = await showConfirm({
+        title: '无法在线预览',
+        text: message + '\n\n是否用系统默认程序打开？',
+        okText: '用系统程序打开',
+        okDanger: false,
+      });
+      if (result.ok) openPreviewInSystemPath(remotePath);
+      return;
+    }
+    notify('预览失败：' + message, true);
+  }
+}
+
+function base64Bytes(value) {
+  return Uint8Array.from(atob(value || ''), (c) => c.charCodeAt(0));
+}
+
+function showPreview(data, remotePath) {
+  const dialog = document.getElementById('preview-dialog');
+  const body = document.getElementById('preview-body');
+  cleanupPreview();
+  previewState = { remotePath, localPath: data.localPath, url: '' };
+  const mime = String(data.mime || '').toLowerCase();
+  let html = '';
+  if (mime.startsWith('image/') || mime.startsWith('video/') || mime.startsWith('audio/') || mime.startsWith('application/pdf')) {
+    const blob = new Blob([base64Bytes(data.data)], { type: data.mime });
+    previewState.url = URL.createObjectURL(blob);
+    if (mime.startsWith('image/')) {
+      html = `<img class="preview-image" src="${previewState.url}" alt="${esc(data.name)}" />`;
+    } else if (mime.startsWith('video/')) {
+      html = `<video class="preview-media" src="${previewState.url}" controls autoplay></video>`;
+    } else if (mime.startsWith('audio/')) {
+      html = `<audio class="preview-media" src="${previewState.url}" controls autoplay></audio>`;
+    } else {
+      html = `<iframe class="preview-frame" src="${previewState.url}" title="${esc(data.name)}"></iframe>`;
+    }
+  } else if (mime.startsWith('text/') || mime.includes('json') || mime.includes('xml') || mime.includes('javascript')) {
+    html = `<pre class="preview-text">${esc(new TextDecoder('utf-8').decode(base64Bytes(data.data)))}</pre>`;
+  } else {
+    html = '<div class="empty">该类型暂不支持在线预览，可点击「用系统程序打开」。</div>';
+  }
+  body.innerHTML = html;
+  document.getElementById('preview-title').textContent = data.name;
+  if (!dialog.open) dialog.showModal();
+  notify('预览：' + data.name);
+}
+
+function cleanupPreview() {
+  if (previewState && previewState.url) URL.revokeObjectURL(previewState.url);
+  previewState = null;
+  const body = document.getElementById('preview-body');
+  if (body) body.innerHTML = '';
+}
+
+function copyPreviewAddress() {
+  if (!previewState) return;
+  api().SetClipboard(previewState.remotePath);
+  notify('已复制：' + previewState.remotePath);
+}
+
+function openPreviewInSystem() {
+  if (!previewState) return;
+  openPreviewInSystemPath(previewState.remotePath);
+}
+
+function openPreviewInSystemPath(remotePath) {
+  api().PreviewRemote(remotePath)
+    .then((local) => notify('已用系统程序打开：' + local))
+    .catch((err) => notify('打开失败：' + err, true));
 }
 
 async function showInfo(remotePath) {
@@ -2363,14 +3132,6 @@ async function chooseDownloadDir() {
   return await api().PickFolder();
 }
 
-async function downloadFolder(remotePath) {
-  const dir = await chooseDownloadDir();
-  if (!dir) return;
-  setStatus('正在下载目录…');
-  try { await api().DownloadFolder(remotePath, dir); notify('目录下载完成：' + dir); }
-  catch (err) { notify('下载失败：' + err, true); }
-}
-
 async function createBucket() {
   const name = await askInput('新桶名称', '');
   if (!name) return;
@@ -2378,29 +3139,84 @@ async function createBucket() {
   catch (err) { notify('创建桶失败：' + err, true); }
 }
 
-async function checkUpdate() {
+// ===== 自动更新：检查后在后台下载，右上角按钮负责重启安装 =====
+async function checkUpdate(silent = false) {
   try {
     const info = await api().CheckUpdate();
-    if (!info.hasUpdate) { notify('当前已是最新版（' + info.current + '）'); return; }
-    if (!info.url) { notify('发现新版本 ' + info.latest + '，但没有可下载的 exe', true); return; }
-    if (!window.confirm('发现新版本 ' + info.latest + '（当前 ' + info.current + '），现在下载并重启更新？')) return;
-    notify('正在下载更新，完成后会自动重启…');
-    await api().DownloadUpdate(info.url);
-  } catch (err) { notify('检查更新失败：' + err, true); }
+    if (!info.hasUpdate) {
+      // 自动检查保持状态栏原内容，避免覆盖目录信息。
+      if (!silent) notify('当前已是最新版（' + info.current + '）');
+      return;
+    }
+    if (!info.url) {
+      if (!silent) notify('发现新版本 ' + info.latest + '，但没有可下载的 exe', true);
+      return;
+    }
+    notify('发现新版本 ' + info.latest + '，正在后台下载…');
+    await api().DownloadUpdate(info.url, info.latest);
+    await refreshUpdateState();
+    notify('新版本 ' + info.latest + ' 已下载，点击右上角「重启安装」完成更新');
+  } catch (err) {
+    // 自动检查在后台进行，失败（离线、GitHub 限流等）不弹错误提示，避免每次启动打扰。
+    if (!silent) notify('检查更新失败：' + err, true);
+  }
+}
+
+async function refreshUpdateState() {
+  try {
+    const stateValue = await api().GetUpdateState();
+    const button = document.getElementById('update-install');
+    if (button) {
+      button.style.display = stateValue.ready ? '' : 'none';
+      button.textContent = '重启安装 ' + String(stateValue.version || '').replace(/^v/, '');
+      button.title = '已下载 ' + (stateValue.version || '') + '，点击重启并安装';
+    }
+    const label = document.getElementById('set-update-state');
+    if (label) {
+      label.textContent = stateValue.ready ? '已下载 ' + stateValue.version + '，可重启安装' : '';
+    }
+  } catch (err) { /* 状态读取失败不影响主流程 */ }
+}
+
+async function installUpdate() {
+  const stateValue = await api().GetUpdateState();
+  if (!stateValue.ready) { notify('还没有下载好的更新', true); return; }
+  const result = await showConfirm({
+    title: '重启并安装更新',
+    text: '将关闭程序并替换为 ' + stateValue.version + '，完成后自动重新打开。正在进行的传输会中断。',
+    okText: '重启并安装',
+    okDanger: false,
+  });
+  if (!result.ok) return;
+  try { await api().ApplyUpdate(); }
+  catch (err) { notify('安装失败：' + err, true); }
+}
+
+// 顶部实时速度：每秒读取一次上传/下载字节增量，没有传输时隐藏。
+function startSpeedPoll() {
+  setInterval(async () => {
+    try {
+      const stats = await api().TransferStats();
+      const element = document.getElementById('speed-indicator');
+      if (!element) return;
+      const parts = [];
+      if (stats.upSpeed > 1) parts.push('↑ ' + fmtSize(stats.upSpeed) + '/s');
+      if (stats.downSpeed > 1) parts.push('↓ ' + fmtSize(stats.downSpeed) + '/s');
+      element.textContent = parts.join('  ');
+      element.style.display = parts.length ? '' : 'none';
+    } catch (err) { /* 轮询失败忽略 */ }
+  }, 1000);
 }
 
 async function uploadFolder() {
   const dir = await api().PickFolder();
   if (!dir) return;
-  const target = await chooseUploadTarget();
-  if (!target) return;
-  const remoteDir = target.name + ':' + target.path;
-  setStatus('正在上传目录 ' + dir + ' 到 ' + target.label + ' …');
-  try {
-    await api().UploadFolder(remoteDir, dir);
-    await afterUpload(target);
-    notify('目录上传完成：' + target.label);
-  } catch (err) { notify('上传失败：' + err, true); }
+  const source = {
+    kind: 'local',
+    paths: [dir],
+    title: dir.split(/[\\/]/).filter(Boolean).pop() || dir,
+  };
+  await openCopyPicker(source, currentCopyTarget());
 }
 
 let editingText = null;
@@ -2471,38 +3287,243 @@ function downloadPathsFor(name) {
   return (picked.length ? picked : [name]).map((item) => prefix + item);
 }
 
-// downloadTargetItems 构造「下载到」子菜单：此电脑、已打开的页签、未打开的已保存连接。
-function downloadTargetItems(name) {
-  const paths = downloadPathsFor(name);
-  const items = [];
-  if (state.localTab) {
-    items.push({ label: `此电脑 / ${state.localView.path}`, action: () => copyRemotePathsToLocal(paths, state.localView.path) });
-  }
-  const opened = tabOrder.filter((tab) => tab !== state.active);
-  if (opened.length) {
-    items.push({ separator: true }, { header: true, label: '已打开的页签' });
-    opened.forEach((tab) => {
-      const dir = tab + ':' + (cacheOf(tab).path || '');
-      const label = `${connLabel(tab)} / ${cacheOf(tab).path || '/'}`;
-      items.push({ label, action: () => copyRemotePathsTo(paths, dir, label) });
+// ===== 复制到：先选目标连接，再在对话框里选择目录 =====
+// 已打开页签使用它的当前目录，未打开的连接使用根目录。
+function copyTargetList(sourceKind) {
+  const targets = [];
+  if (sourceKind === 'remote') {
+    targets.push({
+      kind: 'local',
+      label: '此电脑',
+      start: state.localTab ? state.localView.path : (state.home || state.local.path || 'C:\\'),
     });
   }
-  const closed = state.connections.filter((conn) => !tabOrder.includes(conn.name));
-  if (closed.length) {
-    items.push({ separator: true }, { header: true, label: '其他已保存连接（未打开）' });
-    closed.forEach((conn) => {
-      items.push({ label: `远程 / ${conn.displayName || conn.name}`, action: () => copyRemotePathsTo(paths, conn.name + ':', `${conn.displayName || conn.name} /（根目录）`) });
+  state.connections.forEach((connection) => {
+    const opened = tabOrder.includes(connection.name);
+    const dir = opened
+      ? (connection.name === state.active && state.view === 'remote' ? state.path : (cacheOf(connection.name).path || ''))
+      : '';
+    targets.push({
+      kind: 'remote',
+      name: connection.name,
+      label: (connection.displayName || connection.name) + (opened ? '（已打开）' : ''),
+      start: dir,
     });
-  }
-  if (!items.length) items.push({ label: '没有可用的目标', action: () => notify('没有其他页签或已保存连接', true) });
-  return items;
+  });
+  return targets;
 }
 
-// openDownloadTargetMenu 在执行列按钮下方展开「下载到」子菜单。
-function openDownloadTargetMenu(anchor, name) {
-  if (state.view !== 'remote' || !state.active) { notify('请先选择文件', true); return; }
+function copyTargetItems(source) {
+  return copyTargetList(source.kind).map((target) => ({
+    label: target.kind === 'local'
+      ? `此电脑 / ${target.start || '用户目录'}`
+      : `${target.label} / ${target.start || '根目录'}`,
+    action: () => openCopyPicker(source, target),
+  }));
+}
+
+function remoteCopySource(name, isDir) {
+  if (isDir) {
+    const path = state.active + ':' + (state.path ? state.path + '/' : '') + name;
+    return { kind: 'remoteDir', paths: [path], title: name };
+  }
+  const paths = downloadPathsFor(name);
+  return { kind: 'remoteFile', paths, title: paths.length > 1 ? paths.length + ' 个文件' : name };
+}
+
+function localCopySource(full) {
+  const picked = state.localMulti.size > 1 && state.localMulti.has(full)
+    ? Array.from(state.localMulti)
+    : [full];
+  const name = full.split(/[\\/]/).filter(Boolean).pop() || full;
+  return { kind: 'local', paths: picked, title: picked.length > 1 ? picked.length + ' 个项目' : name };
+}
+
+function openCopyMenu(anchor, source) {
+  if (!source.paths.length) { notify('请先选择文件', true); return; }
   const rect = anchor.getBoundingClientRect();
-  showMenu(rect.left, rect.bottom + 2, [{ label: '下载到', children: downloadTargetItems(name) }]);
+  showMenu(rect.left, rect.bottom + 2, copyTargetItems(source));
+}
+
+function currentCopyTarget() {
+  if (state.active) {
+    const path = state.view === 'remote' ? state.path : (cacheOf(state.active).path || '');
+    return { kind: 'remote', name: state.active, start: path };
+  }
+  const first = tabOrder[0] || (state.connections[0] && state.connections[0].name);
+  if (first) return { kind: 'remote', name: first, start: cacheOf(first).path || '' };
+  return { kind: 'local', start: state.localView.path || state.home || 'C:\\' };
+}
+
+let copyState = null;
+let copySeq = 0;
+
+async function openCopyPicker(source, target) {
+  const targets = copyTargetList(source.kind);
+  if (!targets.length) { notify('请先新建一个连接', true); return; }
+  let index = targets.findIndex((item) => item.kind === target.kind
+    && (item.kind === 'local' || item.name === target.name));
+  if (index < 0) index = 0;
+  copyState = { source, targets, target: targets[index], path: '', entries: [] };
+  document.getElementById('copy-title').textContent = `复制 ${source.title || ''} 到`;
+  const select = document.getElementById('copy-target-select');
+  select.innerHTML = targets.map((item, i) => `<option value="${i}">${esc(targetLabel(item))}</option>`).join('');
+  select.value = String(index);
+  select.onchange = () => {
+    const next = copyState && copyState.targets[Number(select.value)];
+    if (!next || !copyState) return;
+    copyState.target = next;
+    loadCopyDir(next.start || '');
+  };
+  document.getElementById('copy-dialog').showModal();
+  await loadCopyDir(targets[index].start || '');
+}
+
+function targetLabel(target) {
+  if (target.kind === 'local') return '此电脑 / ' + (target.start || '用户目录');
+  return target.label + ' / ' + (target.start || '根目录');
+}
+
+function closeCopyDialog() {
+  copyState = null;
+  const dialog = document.getElementById('copy-dialog');
+  if (dialog.open) dialog.close();
+}
+
+async function loadCopyDir(path) {
+  if (!copyState) return;
+  const seq = ++copySeq;
+  copyState.path = path;
+  copyState.entries = [];
+  const list = document.getElementById('copy-list');
+  document.getElementById('copy-path').textContent = copyState.target.kind === 'local'
+    ? (path || '此电脑')
+    : copyState.target.name + ':' + path;
+  list.innerHTML = '<div class="empty">正在读取…</div>';
+  try {
+    const entries = copyState.target.kind === 'local'
+      ? (await api().ListLocal(path)) || []
+      : (await api().List(copyState.target.name + ':' + path)) || [];
+    if (!copyState || seq !== copySeq) return;
+    copyState.entries = entries.filter((entry) => entry.isDir);
+  } catch (err) {
+    if (!copyState || seq !== copySeq) return;
+    copyState.entries = [];
+    list.innerHTML = `<div class="empty error">${esc(describeError(err) || String(err))}</div>`;
+    return;
+  }
+  renderCopyList();
+}
+
+function renderCopyList() {
+  if (!copyState) return;
+  const list = document.getElementById('copy-list');
+  const target = copyState.target;
+  const driveSelect = document.getElementById('copy-drive');
+  if (target.kind === 'local') {
+    driveSelect.style.display = '';
+    const drives = state.local.drives || [];
+    const currentRoot = /^[A-Za-z]:[\\/]/.test(copyState.path) ? copyState.path.slice(0, 3) : '';
+    driveSelect.innerHTML = drives.map((drive) => {
+      const letter = drive.root.charAt(0).toUpperCase();
+      const label = drive.label && drive.label !== letter ? drive.root + ' ' + drive.label : drive.root;
+      return `<option value="${esc(drive.root)}"${drive.root.toUpperCase() === currentRoot.toUpperCase() ? ' selected' : ''}>${esc(label)}</option>`;
+    }).join('');
+    driveSelect.onchange = () => loadCopyDir(driveSelect.value);
+  } else {
+    driveSelect.style.display = 'none';
+  }
+  document.getElementById('copy-new').style.display = target.kind === 'remote' ? '' : 'none';
+  const rows = copyState.entries
+    .map((entry) => `<div class="copy-row" data-name="${esc(entry.name)}" title="单击进入">${ICONS.folder}<span>${esc(entry.name)}</span></div>`)
+    .join('');
+  list.innerHTML = rows || '<div class="empty">没有子目录，可直接复制到当前目录</div>';
+  list.querySelectorAll('.copy-row').forEach((row) => {
+    row.onclick = () => loadCopyDir(joinTargetPath(copyState.path, row.dataset.name));
+  });
+}
+
+function joinTargetPath(base, name) {
+  if (!base) return name;
+  if (copyState && copyState.target.kind === 'local') return joinLocal(base, name);
+  return base.replace(/\/+$/, '') + '/' + name;
+}
+
+function copyParentPath(path) {
+  if (!path) return '';
+  if (copyState && copyState.target.kind === 'local') {
+    const value = String(path).replace(/[\\/]+$/, '');
+    const index = Math.max(value.lastIndexOf('\\'), value.lastIndexOf('/'));
+    if (index <= 2) return value.slice(0, 3);
+    return value.slice(0, index);
+  }
+  const value = String(path).replace(/\/+$/, '');
+  const index = value.lastIndexOf('/');
+  return index > 0 ? value.slice(0, index) : '';
+}
+
+function copyUp() {
+  if (!copyState) return;
+  loadCopyDir(copyParentPath(copyState.path));
+}
+
+async function createCopyDir() {
+  if (!copyState || copyState.target.kind !== 'remote') return;
+  const name = await askInput('新建文件夹名称', '');
+  if (!name) return;
+  const target = copyState.target.name + ':' + joinTargetPath(copyState.path, name);
+  try {
+    await api().Mkdir(target);
+    await loadCopyDir(copyState.path);
+    toast('已创建：' + name);
+  } catch (err) { notify('创建失败：' + err, true); }
+}
+
+async function confirmCopy() {
+  if (!copyState) return;
+  const { source, target, path } = copyState;
+  closeCopyDialog();
+  await performCopy(source, target, path);
+}
+
+async function performCopy(source, target, path) {
+  const label = target.kind === 'local' ? path : `${target.name}:${path || '/'}`;
+  if (target.kind === 'local') {
+    if (source.kind === 'remoteFile') { await copyRemotePathsToLocal(source.paths, path); return; }
+    if (source.kind === 'remoteDir') {
+      // 保留目录本身的名字：复制文件夹到 D:\x 时落到 D:\x\<文件夹名>。
+      const name = source.paths[0].split('/').filter(Boolean).pop() || 'folder';
+      const dest = joinLocal(path, name);
+      setStatus(`正在复制目录到 ${dest} …`);
+      try {
+        await api().DownloadFolder(source.paths[0], dest);
+        if (state.view === 'local' && state.localView.path === path) await loadLocalView(path);
+        notify('目录已复制到 ' + dest);
+      } catch (err) { notify('复制失败：' + err, true); }
+      return;
+    }
+    notify('此电脑内部暂不支持复制', true);
+    return;
+  }
+  const remoteDir = target.name + ':' + path;
+  if (source.kind === 'remoteFile') { await copyRemotePathsTo(source.paths, remoteDir, label); return; }
+  if (source.kind === 'remoteDir') {
+    setStatus(`正在复制目录到 ${label} …`);
+    try {
+      const dest = await api().CopyRemoteDir(source.paths[0], remoteDir);
+      await refreshAfterRemoteWrite(remoteDir);
+      notify('目录已复制到 ' + dest);
+    } catch (err) { notify('复制失败：' + err, true); }
+    return;
+  }
+  await uploadPathsTo(source.paths, target.name, remoteDir, label);
+}
+
+function refreshAfterRemoteWrite(dir) {
+  const name = dir.split(':')[0];
+  if (name === state.active && state.view === 'remote') return loadEntries();
+  if (tabCache[name]) cacheOf(name).loaded = false;
+  return Promise.resolve();
 }
 
 // copyRemotePathsTo 把多个远程文件复制到另一个远程目录。
@@ -2547,45 +3568,30 @@ async function uploadPathsTo(paths, targetName, remoteDir, label) {
   notify(`上传到 ${label || remoteDir} 完成：成功 ${ok}，失败 ${fail}${detail}`, fail > 0);
 }
 
-// 目录下载到已打开的本地页签。
-async function downloadFolderToTarget(remotePath) {
-  if (!state.localTab) { notify('请先打开此电脑页签', true); return; }
-  const dir = state.localView.path;
-  setStatus('正在下载目录到 ' + dir + ' …');
-  try {
-    await api().DownloadFolder(remotePath, dir);
-    await loadLocalView(dir);
-    notify('目录已下载到 ' + dir);
-  } catch (err) { notify('下载失败：' + err, true); }
-}
-
-async function uploadPaths(paths, force) {
+// uploadPaths 把本地文件复制到远程：弹出目标选择框，默认目标为当前页签的目录。
+async function uploadPaths(paths) {
   if (!paths.length) return;
-  const target = await chooseUploadTarget(force);
-  if (!target) return;
-  const remoteDir = target.name + ':' + target.path;
-  let ok = 0, fail = 0, firstError = '';
-  for (const path of paths) {
-    try { await api().UploadPath(remoteDir, path); ok++; }
-    catch (err) {
-      fail++;
-      // 保留第一条错误，避免失败原因被吞掉只能看到「失败 N」。
-      if (!firstError) firstError = String(err);
-    }
-  }
-  await afterUpload(target);
-  const detail = fail > 0 && firstError ? '：' + firstError : '';
-  notify(`上传到 ${target.label} 完成：成功 ${ok}，失败 ${fail}${detail}`, fail > 0);
+  const source = {
+    kind: 'local',
+    paths,
+    title: paths.length > 1 ? paths.length + ' 个文件' : (paths[0].split(/[\\/]/).filter(Boolean).pop() || ''),
+  };
+  const target = currentCopyTarget();
+  if (target.kind === 'local') { notify('请先打开一个远程连接再上传', true); return; }
+  await openCopyPicker(source, target);
 }
 
-// uploadFiles 打开多选文件对话框，把选中的文件上传到目标页签。
+// uploadFiles 打开多选文件对话框，选择目标连接与目录后复制过去。
 async function uploadFiles() {
   if (state.view === 'local') { notify('请先切换到远程页签', true); return; }
   const files = await api().PickFiles();
   if (!files || !files.length) return;
-  const target = await chooseUploadTarget();
-  if (!target) return;
-  await uploadPathsTo(files, target.name, target.name + ':' + target.path, target.label);
+  const source = {
+    kind: 'local',
+    paths: files,
+    title: files.length > 1 ? files.length + ' 个文件' : (files[0].split(/[\\/]/).filter(Boolean).pop() || ''),
+  };
+  await openCopyPicker(source, currentCopyTarget());
 }
 
 const COMMON_ACTIONS = [
@@ -2643,7 +3649,7 @@ function renderPolicy() {
     ? policy.statements.map((item, index) => `<div class="stmt ${index === policy.index ? 'active' : ''}" data-i="${index}">
         <b>${esc(item.effect)}</b> ${esc(item.principal)}
         <small>${esc(item.actions.join(', '))}</small>
-        <span class="del" data-del="${index}">✕</span></div>`).join('')
+        <span class="del" data-del="${index}">${ICONS.close}</span></div>`).join('')
     : '<div class="empty">没有声明</div>';
   list.querySelectorAll('.stmt').forEach((node) => {
     node.onclick = (e) => {
@@ -2865,7 +3871,7 @@ async function refreshDownloadList() {
       <td class="htime">${esc(item.time)}</td>
       <td class="hremote" title="${esc(item.remote)}">${esc(item.remote)}</td>
       <td class="hpath" title="${esc(item.localPath)}">${esc(item.localPath)}</td>
-      <td class="hops"><button id="transfer-open-${index}" data-open="1" title="在连接中打开并定位">📍</button><button id="transfer-del-${index}" data-del="1" class="danger-op" title="删除记录">🗑</button></td>
+      <td class="hops"><button id="transfer-open-${index}" data-open="1" title="在连接中打开并定位">${ICONS.pin}</button><button id="transfer-del-${index}" data-del="1" class="danger-op" title="删除记录">${ICONS.trash}</button></td>
     </tr>`;
   }).join('');
   host.innerHTML = `<table class="history-table">
@@ -2985,7 +3991,8 @@ async function openLog() {
   } catch (err) { toast('读取日志失败：' + err, true); }
 }
 
-function openSettings() {
+// openSettings 打开设置对话框并回填当前值。
+async function openSettings() {
   const s = state.settings;
   document.getElementById('set-config').value = s.rcloneConfig || '';
   document.getElementById('set-startup-view').value = s.startupView || 'home';
@@ -3002,7 +4009,10 @@ function openSettings() {
   document.getElementById('set-autosize-interval').value = s.autoSizeInterval ?? 2;
   document.getElementById('set-download-dir').value = s.downloadDirectory || '';
   document.getElementById('set-drag-mode').value = s.dragMode || 'shell';
+  document.getElementById('set-auto-update').checked = s.autoUpdate !== false;
+  document.getElementById('set-update-state').textContent = '';
   document.getElementById('settings-dialog').showModal();
+  refreshUpdateState();
 }
 
 async function exportBundle() {
@@ -3043,6 +4053,7 @@ async function saveSettings(closeAfter = false) {
     autoSizeInterval: Math.min(60, Math.max(0, parseInt(document.getElementById('set-autosize-interval').value, 10) || 0)),
     downloadDirectory: document.getElementById('set-download-dir').value.trim(),
     dragMode: document.getElementById('set-drag-mode').value,
+    autoUpdate: document.getElementById('set-auto-update').checked,
   };
   try {
     await api().SaveSettings(next);
@@ -3057,13 +4068,15 @@ async function saveSettings(closeAfter = false) {
 // ===== 通用确认框：与主题一致的删除确认，替代系统原生 confirm =====
 let confirmResolve = null;
 
-function showConfirm({ title, text, okText = '删除', checkboxLabel = '' }) {
+function showConfirm({ title, text, okText = '删除', checkboxLabel = '', okDanger = true }) {
   return new Promise((resolve) => {
     confirmResolve = resolve;
     document.getElementById('confirm-title').textContent = title;
     document.getElementById('confirm-text').textContent = text || '';
     const ok = document.getElementById('confirm-ok');
     ok.textContent = okText;
+    // 删除类操作使用红色实心按钮；普通确认使用主题色。
+    ok.className = okDanger ? 'danger-solid' : 'primary';
     const checkRow = document.getElementById('confirm-check-row');
     const check = document.getElementById('confirm-check');
     check.checked = false;

@@ -26,6 +26,8 @@ type Settings struct {
 	AutoSizeInterval       int      `json:"autoSizeInterval"`
 	StartupView            string   `json:"startupView"`
 	ServerModtimeRemotes   []string `json:"serverModtimeRemotes"`
+	// AutoUpdate 开启后启动时自动检查并在后台下载新版本，由用户点右上角按钮重启安装。
+	AutoUpdate bool `json:"autoUpdate"`
 }
 
 // Connection 是 rclone.conf 中一个连接的公开信息，不含密钥。
@@ -55,7 +57,7 @@ func SettingsPath() string {
 
 // LoadSettings 读取设置；首次启动时尝试从 C# 版本迁移 rclone 配置路径。
 func LoadSettings() Settings {
-	value := Settings{Theme: "light", AutoSizeDelay: 5, AutoSizeInterval: 2}
+	value := Settings{Theme: "light", AutoSizeDelay: 5, AutoSizeInterval: 2, AutoUpdate: true}
 	if data, err := os.ReadFile(SettingsPath()); err == nil {
 		_ = json.Unmarshal(data, &value)
 	} else if old := legacySettingsPath(); old != "" {
@@ -64,6 +66,8 @@ func LoadSettings() Settings {
 			if json.Unmarshal(data, &modern) == nil && strings.TrimSpace(modern.RcloneConfig) != "" {
 				// 旧 Go 版本使用小驼峰字段，直接按新结构读取。
 				value = modern
+				// 旧版没有自动更新开关，迁移后默认开启。
+				value.AutoUpdate = true
 			} else {
 				var legacy struct {
 					RcloneConfiguration   string   `json:"RcloneConfiguration"`

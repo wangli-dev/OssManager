@@ -2,8 +2,11 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
+	"mime"
 	"net/http"
 	"os"
 	"os/exec"
@@ -32,7 +35,7 @@ import (
 	"OssManager/internal/transfer"
 )
 
-const appVersion = "1.3.3"
+const appVersion = "1.4.0"
 
 func logf(format string, args ...interface{}) {
 	_ = os.MkdirAll(config.DataDir(), 0o755)
@@ -68,6 +71,7 @@ func (a *App) startup(ctx context.Context) {
 	log.InitLogging()
 	log.Handler.SetLevel(fs.LogLevelToSlog(fs.LogLevelDebug))
 	go a.restoreMounts()
+	go a.autoCheckUpdate()
 }
 
 func (a *App) mountOptions(remote string) mount.Options {
@@ -601,6 +605,11 @@ func (a *App) CopyRemote(srcPath, dstDir string) (string, error) {
 	return transfer.CopyRemote(a.ctx, a.settings.RcloneConfig, srcPath, dstDir)
 }
 
+// CopyRemoteDir 把远程目录整体复制到另一个远程目录下，保留目录名。
+func (a *App) CopyRemoteDir(srcDir, dstDir string) (string, error) {
+	return transfer.CopyRemoteDir(a.ctx, a.settings.RcloneConfig, srcDir, dstDir)
+}
+
 // DownloadTasks 返回正在下载与最近完成的下载任务。
 func (a *App) DownloadTasks() []transfer.Task {
 	return transfer.ListTasks()
@@ -835,6 +844,19 @@ func (a *App) OpenDataDir() error {
 	return filemanager.Open(config.DataDir(), a.settings.FileManager)
 }
 
+// HomeDir 返回当前用户目录，供「此电脑」页签默认打开。
+func (a *App) HomeDir() string {
+	if home, err := os.UserHomeDir(); err == nil {
+		return home
+	}
+	return ""
+}
+
+// TransferStats 返回实时上传/下载速度，界面每秒轮询一次。
+func (a *App) TransferStats() transfer.StatsSnapshot {
+	return transfer.Snapshot()
+}
+
 // SaveConnectionOrder 保存连接排序。
 func (a *App) SaveConnectionOrder(names []string) error {
 	return config.WriteOrder(names)
@@ -904,6 +926,48 @@ func (a *App) PreviewRemote(remotePath string) (string, error) {
 		return "", err
 	}
 	return local, filemanager.Preview(local)
+}
+
+// PreviewData 是在线预览返回的内容：小文件以 base64 交给界面渲染，避免启动外部程序。
+type PreviewData struct {
+	Name      string `json:"name"`
+	Mime      string `json:"mime"`
+	Size      int64  `json:"size"`
+	Data      string `json:"data"`
+	LocalPath string `json:"localPath"`
+}
+
+// previewLimit 限制在线预览大小，避免大文件占用内存与 IPC 通道。
+const previewLimit = 24 << 20
+
+// PreviewData 下载对象并以 base64 返回，供界面内嵌预览图片、文本、PDF 与音视频。
+func (a *App) PreviewData(remotePath string) (PreviewData, error) {
+	local, err := transfer.Download(a.ctx, a.settings.RcloneConfig, remotePath, filepath.Join(config.DataDir(), "preview"))
+	if err != nil {
+		return PreviewData{}, err
+	}
+	info, err := os.Stat(local)
+	if err != nil {
+		return PreviewData{}, err
+	}
+	result := PreviewData{Name: filepath.Base(local), Size: info.Size(), LocalPath: local}
+	if info.Size() > previewLimit {
+		return result, fmt.Errorf("文件较大（%.1f MB），请使用系统程序打开", float64(info.Size())/1024/1024)
+	}
+	data, err := os.ReadFile(local)
+	if err != nil {
+		return result, err
+	}
+	mimeType := mime.TypeByExtension(strings.ToLower(filepath.Ext(local)))
+	if mimeType == "" {
+		mimeType = http.DetectContentType(data)
+	}
+	if strings.HasPrefix(mimeType, "text/") && !strings.Contains(mimeType, "charset") {
+		mimeType += "; charset=utf-8"
+	}
+	result.Mime = mimeType
+	result.Data = base64.StdEncoding.EncodeToString(data)
+	return result, nil
 }
 
 // SetClipboard 写入文本到剪贴板。
@@ -1096,12 +1160,13 @@ func compareVersion(left, right string) int {
 	return 0
 }
 
-// DownloadUpdate 下载新版本并启动替换脚本，随后退出程序。
-func (a *App) DownloadUpdate(url string) error {
+// DownloadUpdate 在后台下载新版本到程序目录并登记，不退出程序；安装由 ApplyUpdate 触发。
+func (a *App) DownloadUpdate(url, version string) error {
 	if url == "" {
 		return fmt.Errorf("没有可下载的更新包")
 	}
-	response, err := http.Get(url)
+	client := &http.Client{Timeout: 30 * time.Minute}
+	response, err := client.Get(url)
 	if err != nil {
 		return err
 	}
@@ -1110,30 +1175,149 @@ func (a *App) DownloadUpdate(url string) error {
 		return fmt.Errorf("下载失败：HTTP %d", response.StatusCode)
 	}
 	dir := config.DataDir()
-	updateExe := filepath.Join(dir, "update.exe")
-	file, err := os.Create(updateExe)
+	target := updateExePath()
+	tmp := target + ".tmp"
+	file, err := os.Create(tmp)
 	if err != nil {
 		return err
 	}
-	if _, err := file.ReadFrom(response.Body); err != nil {
-		file.Close()
+	written, copyErr := io.Copy(file, response.Body)
+	closeErr := file.Close()
+	if copyErr != nil || closeErr != nil {
+		_ = os.Remove(tmp)
+		if copyErr != nil {
+			return copyErr
+		}
+		return closeErr
+	}
+	if written < 1<<20 {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("下载文件异常：只有 %d 字节", written)
+	}
+	if err := os.Rename(tmp, target); err != nil {
+		_ = os.Remove(tmp)
 		return err
 	}
-	file.Close()
-	script := filepath.Join(dir, "update.cmd")
-	current := filepath.Join(dir, "OssManager.exe")
+	state := UpdateState{Ready: true, Version: version, URL: url, Path: target}
+	data, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	if err := os.WriteFile(updateMetaPath(), data, 0o644); err != nil {
+		return err
+	}
+	logf("update downloaded version=%s size=%d", version, written)
+	if a.ctx != nil {
+		runtime.EventsEmit(a.ctx, "update-ready", version)
+	}
+	return nil
+}
+
+// UpdateState 是已下载待安装更新的状态。
+type UpdateState struct {
+	Ready   bool   `json:"ready"`
+	Version string `json:"version"`
+	URL     string `json:"url"`
+	Path    string `json:"path"`
+	Error   string `json:"error"`
+}
+
+func updateExePath() string {
+	return filepath.Join(config.DataDir(), "update.exe")
+}
+
+func updateMetaPath() string {
+	return filepath.Join(config.DataDir(), "update.json")
+}
+
+// GetUpdateState 返回已下载的更新；update.json 与 update.exe 同时存在才算就绪。
+func (a *App) GetUpdateState() UpdateState {
+	state := UpdateState{}
+	data, err := os.ReadFile(updateMetaPath())
+	if err != nil {
+		return state
+	}
+	if err := json.Unmarshal(data, &state); err != nil {
+		return UpdateState{}
+	}
+	if state.Path == "" {
+		state.Path = updateExePath()
+	}
+	if info, err := os.Stat(state.Path); err != nil || info.Size() < 1<<20 {
+		state.Ready = false
+		return state
+	}
+	// 已经安装到当前或更高版本时，残留的更新文件不再提示。
+	if compareVersion(strings.TrimPrefix(state.Version, "v"), appVersion) <= 0 {
+		state.Ready = false
+		return state
+	}
+	state.Ready = true
+	return state
+}
+
+// ApplyUpdate 启动替换脚本、退出程序：脚本等待本进程退出后覆盖 exe 并重新启动。
+func (a *App) ApplyUpdate() error {
+	state := a.GetUpdateState()
+	if !state.Ready {
+		return fmt.Errorf("没有已下载的更新")
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	script := filepath.Join(config.DataDir(), "update.cmd")
 	content := "@echo off\r\n" +
-		"timeout /t 3 /nobreak >nul\r\n" +
-		"copy /y \"" + updateExe + "\" \"" + current + "\" >nul\r\n" +
-		"start \"\" \"" + current + "\"\r\n" +
-		"del \"" + updateExe + "\"\r\n" +
+		"timeout /t 2 /nobreak >nul\r\n" +
+		"set ok=0\r\n" +
+		"for /l %%i in (1,1,30) do (\r\n" +
+		"  copy /y \"" + state.Path + "\" \"" + exe + "\" >nul 2>nul\r\n" +
+		"  if not errorlevel 1 (\r\n" +
+		"    set ok=1\r\n" +
+		"    goto done\r\n" +
+		"  )\r\n" +
+		"  timeout /t 1 /nobreak >nul\r\n" +
+		")\r\n" +
+		":done\r\n" +
+		"start \"\" \"" + exe + "\"\r\n" +
+		"if \"%ok%\"==\"1\" del \"" + state.Path + "\" >nul 2>nul\r\n" +
+		"if \"%ok%\"==\"1\" del \"" + updateMetaPath() + "\" >nul 2>nul\r\n" +
 		"del \"%~f0\"\r\n"
 	if err := os.WriteFile(script, []byte(content), 0o644); err != nil {
 		return err
 	}
-	if err := exec.Command("cmd", "/c", "start", "", script).Start(); err != nil {
+	command := exec.Command("cmd", "/c", "start", "", script)
+	command.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: 0x08000000}
+	if err := command.Start(); err != nil {
 		return err
 	}
+	logf("update apply version=%s exe=%s", state.Version, exe)
 	runtime.Quit(a.ctx)
 	return nil
+}
+
+// autoCheckUpdate 在启动后按设置检查更新，发现新版本时后台下载，界面只提示重启安装。
+func (a *App) autoCheckUpdate() {
+	if !a.settings.AutoUpdate {
+		return
+	}
+	time.Sleep(8 * time.Second)
+	existing := a.GetUpdateState()
+	info, err := a.CheckUpdate()
+	if err != nil {
+		logf("auto update check err=%v", err)
+		return
+	}
+	if !info.HasUpdate || info.URL == "" {
+		return
+	}
+	if existing.Ready && strings.TrimPrefix(existing.Version, "v") == strings.TrimPrefix(info.Latest, "v") {
+		return
+	}
+	if err := a.DownloadUpdate(info.URL, info.Latest); err != nil {
+		logf("auto update download err=%v", err)
+	}
 }
