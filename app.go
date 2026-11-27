@@ -35,7 +35,7 @@ import (
 	"OssManager/internal/transfer"
 )
 
-const appVersion = "1.4.3"
+const appVersion = "1.4.4"
 
 func logf(format string, args ...interface{}) {
 	_ = os.MkdirAll(config.DataDir(), 0o755)
@@ -61,12 +61,11 @@ func rotateLog(path string, limit int64) {
 type App struct {
 	ctx      context.Context
 	settings config.Settings
-	mounter  *mount.Manager
 }
 
 // NewApp 创建应用实例。
 func NewApp() *App {
-	return &App{mounter: mount.NewManager()}
+	return &App{}
 }
 
 // startup 由 Wails 在启动时调用。
@@ -83,77 +82,55 @@ func (a *App) startup(ctx context.Context) {
 	fs.GetConfig(ctx).LogLevel = fs.LogLevelDebug
 	log.InitLogging()
 	log.Handler.SetLevel(fs.LogLevelToSlog(fs.LogLevelDebug))
+	// 保持开机自启项与设置一致（exe 移动后会更新路径）。
+	syncAutoStart(a.settings.AutoStart)
 	go a.restoreMounts()
 	go a.autoCheckUpdate()
 }
 
 func (a *App) mountOptions(remote string) mount.Options {
+	return mountOptionsFor(a.settings, remote)
+}
+
+// mountOptionsFor 根据设置生成挂载参数，主程序与后台挂载进程共用。
+func mountOptionsFor(settings config.Settings, remote string) mount.Options {
 	// ServerModtimeRemotes 中的连接使用服务器修改时间，避免浏览目录时逐个请求对象元数据。
 	useServerModtime := false
 	// 连接名取冒号前部分，路径型 remote（host:/）也要能匹配设置里的名单。
 	name := config.RemoteName(remote)
-	for _, item := range a.settings.ServerModtimeRemotes {
+	for _, item := range settings.ServerModtimeRemotes {
 		if strings.EqualFold(strings.TrimSpace(item), name) {
 			useServerModtime = true
 			break
 		}
 	}
 	return mount.Options{
-		CacheDirectory:   a.settings.CacheDirectory,
-		DirCacheTime:     a.settings.DirCacheTime,
-		VfsCacheMaxSize:  a.settings.VfsCacheMaxSize,
-		VfsCacheMaxAge:   a.settings.VfsCacheMaxAge,
-		BufferSize:       a.settings.BufferSize,
+		CacheDirectory:   settings.CacheDirectory,
+		DirCacheTime:     settings.DirCacheTime,
+		VfsCacheMaxSize:  settings.VfsCacheMaxSize,
+		VfsCacheMaxAge:   settings.VfsCacheMaxAge,
+		BufferSize:       settings.BufferSize,
 		UseServerModtime: useServerModtime,
 	}
 }
 
 func (a *App) restoreMounts() {
-	time.Sleep(3 * time.Second)
-	// 先登记系统上已有的外部 rclone 挂载，避免前端看不到旧版本留下的盘符。
-	externalRemotes := map[string]bool{}
-	for _, entry := range mount.CachedExternal() {
-		externalRemotes[strings.ToLower(strings.TrimSuffix(entry.Remote, ":"))] = true
-		if mount.DrivePresent(entry.Drive) {
-			logf("external mount %s %s pid=%d", entry.Remote, entry.Drive, entry.PID)
-		}
+	records := config.ReadMountRecords()
+	if len(records) == 0 {
+		return
 	}
-	seen := make(map[string]bool)
-	for _, record := range config.ReadMountRecords() {
-		// 记录已带完整 remote（连接名: 或 连接名:/路径），直接使用，不再二次补冒号。
-		remote := config.NormalizeRemote(record.Remote)
-		if remote == "" {
-			continue
-		}
-		if seen[remote] {
-			continue
-		}
-		seen[remote] = true
-		// 该连接已由独立 rclone 进程挂载时不再重复挂载，并清掉本程序的旧记录。
-		if externalRemotes[strings.ToLower(config.RemoteName(remote))] {
-			a.removeMountRecordByDrive(record.Drive)
-			continue
-		}
-		if mount.DrivePresent(record.Drive) {
-			continue
-		}
-		options := a.mountOptions(remote)
-		options.VolumeName = record.VolumeName
-		if options.VolumeName == "" {
-			options.VolumeName = a.volumeLabel(remote)
-		}
-		if err := a.mounter.Mount(a.ctx, a.settings.RcloneConfig, remote, record.Drive, options); err != nil {
-			logf("restore mount %s %s err=%v", remote, record.Drive, err)
-		} else {
-			// 挂载成功后立即在进程内读一次目录：区分「进程内列表为空」与「外部读取侧问题」。
-			entries, readErr := os.ReadDir(record.Drive + "\\")
-			logf("restore mount %s %s ok, in-proc readdir=%d err=%v", remote, record.Drive, len(entries), readErr)
-			if len(entries) == 0 {
-				// vfs 目录为空时用 backend 直读对照：区分 backend 层与 fuse/vfs 层的问题。
-				items, listErr := rclonefs.List(a.ctx, a.settings.RcloneConfig, remote)
-				logf("restore mount %s backend list=%d err=%v", remote, len(items), listErr)
-			}
-		}
+	if err := ensureMountDaemon(); err != nil {
+		logf("start mount daemon err=%v", err)
+		return
+	}
+	drives := make([]string, 0, len(records))
+	for _, record := range records {
+		drives = append(drives, record.Drive)
+	}
+	if waitForDrives(drives, 30*time.Second) {
+		logf("mount daemon ready drives=%v", drives)
+	} else {
+		logf("mount daemon timeout drives=%v", drives)
 	}
 	runtime.EventsEmit(a.ctx, "mounts-changed")
 }
@@ -219,6 +196,7 @@ func (a *App) SaveSettings(value config.Settings) error {
 	}
 	a.settings = value
 	transfer.SetConcurrency(value.MaxConcurrentTransfers)
+	syncAutoStart(value.AutoStart)
 	return nil
 }
 
@@ -271,42 +249,71 @@ func (a *App) List(remote string) ([]rclonefs.Entry, error) {
 	return rclonefs.List(a.ctx, a.settings.RcloneConfig, remote)
 }
 
-// Mount 把连接挂载到盘符，volumeName 为空时使用连接显示名。
+// Mount 把连接挂载到盘符，实际挂载由后台挂载进程完成；
+// volumeName 为空时使用连接显示名。
 func (a *App) Mount(remote, drive, volumeName string) error {
 	remote = config.NormalizeRemote(remote)
+	drive = strings.ToUpper(strings.TrimSpace(drive))
+	if len(drive) != 2 || drive[1] != ':' {
+		return fmt.Errorf("盘符格式不正确")
+	}
 	logf("Mount remote=%s drive=%s volume=%s", remote, drive, volumeName)
-	options := a.mountOptions(remote)
-	options.VolumeName = volumeName
-	if options.VolumeName == "" {
-		// 前端未填卷标时用连接名，名称与显示名已统一。
-		options.VolumeName = a.volumeLabel(remote)
+	existing := false
+	for _, record := range config.ReadMountRecords() {
+		if !strings.EqualFold(record.Drive, drive) {
+			continue
+		}
+		if !strings.EqualFold(config.NormalizeRemote(record.Remote), remote) {
+			return fmt.Errorf("盘符 %s 已被 %s 使用", drive, record.Remote)
+		}
+		existing = true
+		break
 	}
-	err := a.mounter.Mount(a.ctx, a.settings.RcloneConfig, remote, drive, options)
-	logf("Mount result err=%v", err)
-	if err == nil {
+	if !existing && mount.DrivePresent(drive) {
+		return fmt.Errorf("盘符 %s 已被占用", drive)
+	}
+	if volumeName == "" {
+		volumeName = a.volumeLabel(remote)
+	}
+	if !existing {
 		a.addMountRecord(remote, drive, volumeName)
-		mount.InvalidateExternal()
-		runtime.EventsEmit(a.ctx, "mounts-changed")
 	}
-	return err
+	if err := ensureMountDaemon(); err != nil {
+		if !existing {
+			a.removeMountRecordByDrive(drive)
+		}
+		return err
+	}
+	if !waitForDrives([]string{drive}, 30*time.Second) {
+		return fmt.Errorf("挂载超时：后台挂载进程会继续重试，请查看 mount-daemon.log")
+	}
+	mount.InvalidateExternal()
+	runtime.EventsEmit(a.ctx, "mounts-changed")
+	logf("Mount ok remote=%s drive=%s", remote, drive)
+	return nil
 }
 
-// Unmount 卸载盘符，本程序挂载失败时回退为结束外部 rclone 进程。
+// Unmount 卸载盘符：删除挂载记录后由后台进程卸载，外部 rclone 进程作为兼容回退。
 func (a *App) Unmount(drive string) error {
+	drive = strings.ToUpper(strings.TrimSpace(drive))
 	logf("Unmount drive=%s", drive)
-	err := a.mounter.Unmount(drive)
-	if err != nil {
-		if externalErr := mount.StopExternal(drive); externalErr != nil {
-			logf("Unmount err=%v external=%v", err, externalErr)
-			return err
+	records := config.ReadMountRecords()
+	found := false
+	for _, record := range records {
+		if strings.EqualFold(record.Drive, drive) {
+			found = true
+			break
 		}
-		mount.InvalidateExternal()
-		mount.WaitDriveGone(drive, 10*time.Second)
-		a.removeMountRecordByDrive(drive)
-		runtime.EventsEmit(a.ctx, "mounts-changed")
-		return nil
 	}
-	a.removeMountRecordByDrive(drive)
+	if found {
+		_ = ensureMountDaemon()
+		a.removeMountRecordByDrive(drive)
+	}
+	// 兼容旧版遗留的外部 rclone.exe 挂载。
+	_ = mount.StopExternal(drive)
+	if !mount.WaitDriveGone(drive, 25*time.Second) {
+		return fmt.Errorf("卸载超时，请稍后重试或查看 mount-daemon.log")
+	}
 	mount.InvalidateExternal()
 	runtime.EventsEmit(a.ctx, "mounts-changed")
 	return nil
@@ -315,38 +322,43 @@ func (a *App) Unmount(drive string) error {
 // UnmountByRemote 按连接名卸载其所有挂载，避免前端挂载表不同步。
 func (a *App) UnmountByRemote(remoteName string) error {
 	target := config.RemoteName(config.NormalizeRemote(remoteName))
-	found := false
-	for drive, remote := range a.mounter.List() {
-		if !strings.EqualFold(config.RemoteName(remote), target) {
+	var drives []string
+	var kept []config.MountRecord
+	for _, record := range config.ReadMountRecords() {
+		if strings.EqualFold(config.RemoteName(record.Remote), target) {
+			drives = append(drives, record.Drive)
 			continue
 		}
-		found = true
-		if err := a.mounter.Unmount(drive); err != nil {
-			return err
-		}
-		a.removeMountRecordByDrive(drive)
+		kept = append(kept, record)
 	}
-	if !found {
-		if entry, ok := mount.FindExternalByRemote(target); ok {
-			found = true
-			if err := mount.StopExternal(entry.Drive); err != nil {
-				return err
-			}
-			mount.WaitDriveGone(entry.Drive, 10*time.Second)
-			a.removeMountRecordByDrive(entry.Drive)
-		}
+	if len(drives) > 0 {
+		_ = config.WriteMountRecords(kept)
+		_ = ensureMountDaemon()
 	}
-	if !found {
+	// 兼容旧版外部挂载。
+	if entry, ok := mount.FindExternalByRemote(target); ok {
+		_ = mount.StopExternal(entry.Drive)
+		drives = append(drives, entry.Drive)
+	}
+	if len(drives) == 0 {
 		return fmt.Errorf("%s 没有挂载", remoteName)
+	}
+	if !waitForDrivesGone(drives, 25*time.Second) {
+		return fmt.Errorf("卸载超时，请稍后重试或查看 mount-daemon.log")
 	}
 	mount.InvalidateExternal()
 	runtime.EventsEmit(a.ctx, "mounts-changed")
 	return nil
 }
 
-// ListMounts 返回盘符到 remote 的映射，包含本程序挂载与外部 rclone 进程挂载。
+// ListMounts 返回盘符到 remote 的映射：以挂载记录为准，兼容外部 rclone 进程挂载。
 func (a *App) ListMounts() map[string]string {
-	mounts := a.mounter.List()
+	mounts := map[string]string{}
+	for _, record := range config.ReadMountRecords() {
+		if mount.DrivePresent(record.Drive) {
+			mounts[strings.ToUpper(record.Drive)] = config.NormalizeRemote(record.Remote)
+		}
+	}
 	for _, entry := range mount.CachedExternal() {
 		if _, exists := mounts[entry.Drive]; exists {
 			continue
@@ -373,14 +385,14 @@ func (a *App) GetMountInfo(name string) MountInfo {
 			result.Drive = drive
 		}
 	}
-	for drive, remote := range a.mounter.List() {
-		pick(drive, remote)
-	}
 	for _, entry := range mount.CachedExternal() {
 		pick(entry.Drive, entry.Remote)
 	}
 	for _, record := range config.ReadMountRecords() {
 		if !strings.EqualFold(config.RemoteName(record.Remote), target) {
+			continue
+		}
+		if !mount.DrivePresent(record.Drive) {
 			continue
 		}
 		if result.Drive == "" {
@@ -418,12 +430,25 @@ func (a *App) NetworkShares() []local.Share {
 // LocalDrives 返回本地盘符与网络位置，rclone 挂载的盘符用连接名作为名称。
 func (a *App) LocalDrives() []local.Drive {
 	drives := local.Drives()
+	records := map[string]config.MountRecord{}
+	for _, record := range config.ReadMountRecords() {
+		records[strings.ToUpper(record.Drive)] = record
+	}
 	external := map[string]mount.External{}
 	for _, entry := range mount.CachedExternal() {
 		external[strings.ToUpper(entry.Drive)] = entry
 	}
 	for index := range drives {
 		key := strings.ToUpper(strings.TrimSuffix(drives[index].Root, `\`))
+		if record, ok := records[key]; ok {
+			label := record.VolumeName
+			if label == "" {
+				label = a.volumeLabel(record.Remote)
+			}
+			drives[index].Label = label
+			drives[index].Kind = "rclone"
+			continue
+		}
 		entry, ok := external[key]
 		if !ok {
 			continue
@@ -550,8 +575,7 @@ func (a *App) RenameConnection(oldName, newName string) error {
 	if err := remote.Rename(a.settings.RcloneConfig, oldName, newName); err != nil {
 		return err
 	}
-	// 挂载表与开机恢复记录也要换成新名字，否则改名后无法按新名卸载、重启也恢复不了。
-	a.mounter.RenameRemote(oldName, newName)
+	// 挂载记录换成新名字后，后台挂载进程会卸载旧挂载并按新名重挂。
 	if config.RenameMountRecords(oldName, newName) {
 		runtime.EventsEmit(a.ctx, "mounts-changed")
 	}
@@ -1311,6 +1335,8 @@ func (a *App) ApplyUpdate() error {
 	script := filepath.Join(config.DataDir(), "update.cmd")
 	content := "@echo off\r\n" +
 		"timeout /t 2 /nobreak >nul\r\n" +
+		"taskkill /IM OssManager.exe /F >nul 2>nul\r\n" +
+		"timeout /t 1 /nobreak >nul\r\n" +
 		"set ok=0\r\n" +
 		"for /l %%i in (1,1,30) do (\r\n" +
 		"  copy /y \"" + state.Path + "\" \"" + exe + "\" >nul 2>nul\r\n" +

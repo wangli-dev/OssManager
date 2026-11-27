@@ -19,6 +19,11 @@ func main() {
 		runAutotest()
 		return
 	}
+	// 后台挂载进程：不启动 Wails 界面，仅按 mounts.txt 维护盘符。
+	if len(os.Args) > 1 && os.Args[1] == "--mount-daemon" {
+		runMountDaemon()
+		return
+	}
 	acquired, err := singleinstance.Acquire("OssManager")
 	if err != nil {
 		println("Error:", err.Error())

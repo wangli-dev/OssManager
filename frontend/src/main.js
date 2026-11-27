@@ -946,6 +946,8 @@ function renderShell() {
         <option value="home">首页</option>
         <option value="last">上次关闭时的画面</option>
       </select>
+      <label class="chk"><input type="checkbox" id="set-autostart" /> 开机自动启动后台挂载服务（不显示主窗口）</label>
+      <p class="hint">登录 Windows 后在后台恢复挂载；关闭主界面不会卸载盘符。</p>
       <h3>连接与文件</h3>
       <label>连接配置文件</label>
       <div class="input-row"><input id="set-config" /><button id="set-config-pick" class="icon-btn" title="选择文件">${ICONS.folderOpen}</button></div>
@@ -4543,6 +4545,7 @@ async function openSettings() {
   const s = state.settings;
   document.getElementById('set-config').value = s.rcloneConfig || '';
   document.getElementById('set-startup-view').value = s.startupView || 'home';
+  document.getElementById('set-autostart').checked = !!s.autoStart;
   document.getElementById('set-filemanager').value = s.fileManager || '';
   document.getElementById('set-cache-dir').value = s.cacheDirectory || '';
   document.getElementById('set-dir-cache').value = s.dirCacheTime || '';
@@ -4588,6 +4591,7 @@ async function saveSettings(closeAfter = false) {
     ...state.settings,
     rcloneConfig: document.getElementById('set-config').value.trim(),
     startupView: document.getElementById('set-startup-view').value,
+    autoStart: document.getElementById('set-autostart').checked,
     fileManager: document.getElementById('set-filemanager').value.trim(),
     cacheDirectory: document.getElementById('set-cache-dir').value.trim(),
     dirCacheTime: document.getElementById('set-dir-cache').value.trim(),
