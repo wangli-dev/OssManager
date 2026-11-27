@@ -163,6 +163,7 @@ function bindWindowSize() {
         localStorage.setItem(WINDOW_KEY, JSON.stringify({ w, h }));
       } catch (err) { /* 忽略 */ }
       scheduleEntryLayout();
+      updateWindowMaxIcon();
     }, 350);
   });
 }
@@ -359,6 +360,8 @@ function openMoreMenu(event) {
   event.stopPropagation();
   const rect = event.currentTarget.getBoundingClientRect();
   showMenu(rect.left, rect.bottom + 4, [
+    { label: '复制全部连接配置（含密钥）', action: copyAllConnectionConfig },
+    { separator: true },
     { label: '导入连接…', action: importJson },
     { label: '导出连接…', action: exportJson },
     { separator: true },
@@ -547,6 +550,10 @@ const ICONS = {
   starFill: `<svg class="svg-icon" viewBox="0 0 16 16" fill="currentColor" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" aria-hidden="true"><path d="M8 2.2l1.7 3.5 3.8.5-2.8 2.7.7 3.8L8 10.9l-3.4 1.8.7-3.8L2.5 6.2l3.8-.5z"/></svg>`,
   plus: `<svg ${ICON_ATTR}><path d="M8 3.3v9.4M3.3 8h9.4"/></svg>`,
   close: `<svg ${ICON_ATTR}><path d="M4.2 4.2l7.6 7.6M11.8 4.2l-7.6 7.6"/></svg>`,
+  winMin: `<svg ${ICON_ATTR}><path d="M3.5 8h9"/></svg>`,
+  winMax: `<svg ${ICON_ATTR}><rect x="3.8" y="3.8" width="8.4" height="8.4" rx=".8"/></svg>`,
+  winRestore: `<svg ${ICON_ATTR}><rect x="5.2" y="3.2" width="7.4" height="7.4" rx=".8"/><path d="M3.4 5.4v7.2h7.2"/></svg>`,
+  winClose: `<svg ${ICON_ATTR}><path d="M4.2 4.2l7.6 7.6M11.8 4.2l-7.6 7.6"/></svg>`,
 };
 
 // connLabel 返回连接在界面上显示的名称：优先 description，其次内部段名。
@@ -649,7 +656,6 @@ function clearFilter() {
 
 // 标题栏显示当前标签与路径，关掉全部标签后恢复程序名。
 function applyWindowTitle() {
-  if (!(window.runtime && window.runtime.WindowSetTitle)) return;
   let title = 'OssManager';
   if (state.view === 'local' && state.localTab) {
     title = `OssManager — ${state.localTab.label} / ${state.localView.path}`;
@@ -657,7 +663,24 @@ function applyWindowTitle() {
     const label = connLabel(state.active);
     title = state.path ? `OssManager — ${label} / ${state.path}` : `OssManager — ${label}`;
   }
-  window.runtime.WindowSetTitle(title);
+  const label = document.getElementById('window-title');
+  if (label) {
+    label.textContent = title;
+    label.title = title;
+  }
+  if (window.runtime && window.runtime.WindowSetTitle) window.runtime.WindowSetTitle(title);
+}
+
+// updateWindowMaxIcon 根据最大化状态切换还原/最大化图标。
+async function updateWindowMaxIcon() {
+  if (!(window.runtime && window.runtime.WindowIsMaximised)) return;
+  try {
+    const maximised = await window.runtime.WindowIsMaximised();
+    const button = document.getElementById('win-max');
+    if (!button) return;
+    button.innerHTML = maximised ? ICONS.winRestore : ICONS.winMax;
+    button.title = maximised ? '还原' : '最大化';
+  } catch (err) { /* 忽略 */ }
 }
 
 // 目录优先，再按当前列排序；对中文使用本地化比较。
@@ -800,9 +823,10 @@ document.addEventListener('click', (e) => {
 
 function renderShell() {
   app.innerHTML = `
-    <header>
+    <header id="app-header">
       <div class="header-side header-left">
         <button id="conn-add" class="primary" title="新建连接">新建连接</button>
+        <span id="window-title" class="window-title" title="OssManager">OssManager</span>
       </div>
       <div class="header-center">
         <button id="conn-quick" class="conn-quick" title="选择连接" style="display:none">选择连接 ▾</button>
@@ -814,6 +838,11 @@ function renderShell() {
         <button id="btn-autosize" class="chip" title="自动统计目录占用：关">统计占用</button>
         <button id="btn-transfer" title="传输记录">传输记录</button>
         <button id="btn-more">更多 ▾</button>
+        <div class="window-controls">
+          <button id="win-min" class="win-btn" title="最小化">${ICONS.winMin}</button>
+          <button id="win-max" class="win-btn" title="最大化">${ICONS.winMax}</button>
+          <button id="win-close" class="win-btn win-close" title="关闭">${ICONS.winClose}</button>
+        </div>
       </div>
     </header>
     <main>
@@ -1164,6 +1193,25 @@ function renderShell() {
   document.getElementById('conn-handle').onclick = () => toggleConnPane(true);
   document.getElementById('conn-handle-open').onclick = () => toggleConnPane(false);
   document.getElementById('btn-more').onclick = openMoreMenu;
+  const minimizeButton = document.getElementById('win-min');
+  if (minimizeButton) minimizeButton.onclick = (e) => { e.stopPropagation(); if (window.runtime && window.runtime.WindowMinimise) window.runtime.WindowMinimise(); };
+  const maximizeButton = document.getElementById('win-max');
+  if (maximizeButton) maximizeButton.onclick = async (e) => {
+    e.stopPropagation();
+    if (window.runtime && window.runtime.WindowToggleMaximise) window.runtime.WindowToggleMaximise();
+    setTimeout(updateWindowMaxIcon, 150);
+  };
+  const closeButton = document.getElementById('win-close');
+  if (closeButton) closeButton.onclick = (e) => { e.stopPropagation(); if (window.runtime && window.runtime.Quit) window.runtime.Quit(); };
+  const appHeader = document.getElementById('app-header');
+  if (appHeader) {
+    appHeader.ondblclick = (e) => {
+      if (e.target.closest && e.target.closest('button, input, select, a')) return;
+      if (window.runtime && window.runtime.WindowToggleMaximise) window.runtime.WindowToggleMaximise();
+      setTimeout(updateWindowMaxIcon, 150);
+    };
+  }
+  updateWindowMaxIcon();
   state.connCollapsed = localStorage.getItem('ossmanager.connCollapsed') === '1';
   applyConnCollapsed();
   document.getElementById('btn-refresh').onclick = refresh;
@@ -1679,6 +1727,9 @@ function bindConnectionList(host) {
         { label: '测试连接', action: () => testConnection(name) },
         { label: '修改名称…', action: () => renameConnection(name) },
         { separator: true },
+        { label: '复制连接地址', action: () => copyConnectionAddress(name) },
+        { label: '复制连接配置（含密钥）', action: () => copyConnectionConfig(name) },
+        { separator: true },
         { label: mountDriveOf(name) ? '卸载' : '挂载', action: () => (mountDriveOf(name) ? unmountRemote(name) : mountRemote(name)) },
         { separator: true },
         { label: '删除连接', danger: true, action: () => deleteConnection(name) },
@@ -1909,15 +1960,30 @@ function renderLocalView() {
     row.ondragend = () => { dragLocalPaths = []; };
     const checkbox = row.querySelector('input[data-check]');
     if (checkbox) {
+      // 只有复选框会改变勾选；Shift 点击复选框可连选。
       checkbox.onclick = (e) => {
         e.stopPropagation();
-        if (checkbox.checked) state.localMulti.add(full);
-        else state.localMulti.delete(full);
-        localAnchor = Array.from(host.querySelectorAll('tr.row')).indexOf(row);
+        const rows = Array.from(host.querySelectorAll('tr.row'));
+        const index = rows.indexOf(row);
+        const turnOn = checkbox.checked;
+        if (e.shiftKey && localAnchor >= 0 && localAnchor < rows.length) {
+          const from = Math.min(localAnchor, index);
+          const to = Math.max(localAnchor, index);
+          for (let i = from; i <= to; i++) {
+            if (turnOn) state.localMulti.add(rows[i].dataset.full);
+            else state.localMulti.delete(rows[i].dataset.full);
+          }
+        } else {
+          if (turnOn) state.localMulti.add(full);
+          else state.localMulti.delete(full);
+          localAnchor = index;
+        }
         syncCheckboxes(host, state.localMulti, 'local-select-all');
       };
     }
+    // 普通单击不勾选；Ctrl 切换勾选，Shift 连选并自动勾选。
     row.onclick = (e) => {
+      if (!e.ctrlKey && !e.metaKey && !e.shiftKey) return;
       const rows = Array.from(host.querySelectorAll('tr.row'));
       const index = rows.indexOf(row);
       if (e.shiftKey) {
@@ -1932,8 +1998,6 @@ function renderLocalView() {
         localAnchor = index;
       }
       syncCheckboxes(host, state.localMulti, 'local-select-all');
-      const kind = isDir ? '目录' : `文件 ${fmtSize(Number(row.dataset.size || 0))}`;
-      setStatus(`此电脑 · ${full} · ${kind} · 修改时间 ${row.dataset.time || '未知'}`);
     };
     row.ondblclick = () => { if (isDir) loadLocalView(full); else api().OpenFolder(full).catch(() => {}); };
     row.oncontextmenu = (e) => {
@@ -2272,43 +2336,61 @@ function renderEntries() {
     row.ondragend = () => { dragRemotePaths = []; };
     const checkbox = row.querySelector('input[data-check]');
     if (checkbox) {
+      // 只有复选框会改变勾选；Shift 点击复选框可连选。
       checkbox.onclick = (e) => {
         e.stopPropagation();
         const name = row.dataset.name;
-        if (checkbox.checked) state.multi.add(name);
-        else state.multi.delete(name);
-        multiAnchor = Array.from(host.querySelectorAll('tr.row')).indexOf(row);
-        state.selected = checkbox.checked
+        const rows = Array.from(host.querySelectorAll('tr.row'));
+        const index = rows.indexOf(row);
+        const turnOn = checkbox.checked;
+        if (e.shiftKey && multiAnchor >= 0 && multiAnchor < rows.length) {
+          const from = Math.min(multiAnchor, index);
+          const to = Math.max(multiAnchor, index);
+          for (let i = from; i <= to; i++) {
+            if (turnOn) state.multi.add(rows[i].dataset.name);
+            else state.multi.delete(rows[i].dataset.name);
+          }
+        } else {
+          if (turnOn) state.multi.add(name);
+          else state.multi.delete(name);
+          multiAnchor = index;
+        }
+        state.selected = turnOn
           ? { name, isDir: row.dataset.dir === 'true', path: state.active + ':' + (state.path ? state.path + '/' : '') + name }
           : null;
         syncCheckboxes(host, state.multi, 'select-all');
-        updateFooter(state.multi.size > 1 ? `已选 ${state.multi.size} 项` : undefined);
+        const picked = state.entries.find((item) => item.name === name);
+        updateFooter(turnOn && state.multi.size === 1 && picked
+          ? `选中：${name}${picked.isDir ? '（目录）' : '（' + fmtSize(picked.size) + '）'}`
+          : (state.multi.size > 1 ? `已选 ${state.multi.size} 项` : undefined));
       };
     }
+    // 普通单击不勾选；按住 Ctrl 切换勾选，按住 Shift 连选并自动勾选。
     row.onclick = (e) => {
-      const name = row.dataset.name;
+      if (!e.ctrlKey && !e.metaKey && !e.shiftKey) return;
       const rows = Array.from(host.querySelectorAll('tr.row'));
       const index = rows.indexOf(row);
+      const name = row.dataset.name;
       if (e.shiftKey) {
         const anchor = multiAnchor >= 0 && multiAnchor < rows.length ? multiAnchor : index;
         const from = Math.min(anchor, index);
         const to = Math.max(anchor, index);
         if (!e.ctrlKey && !e.metaKey) state.multi.clear();
         for (let i = from; i <= to; i++) state.multi.add(rows[i].dataset.name);
+        state.selected = { name, isDir: row.dataset.dir === 'true', path: state.active + ':' + (state.path ? state.path + '/' : '') + name };
       } else {
-        // 直接点击也能逐个勾选/取消，不必每次按住 Ctrl。
         if (state.multi.has(name)) state.multi.delete(name);
         else state.multi.add(name);
         multiAnchor = index;
+        state.selected = state.multi.has(name)
+          ? { name, isDir: row.dataset.dir === 'true', path: state.active + ':' + (state.path ? state.path + '/' : '') + name }
+          : null;
       }
       syncCheckboxes(host, state.multi, 'select-all');
-      state.selected = state.multi.has(name)
-        ? { name, isDir: row.dataset.dir === 'true', path: state.active + ':' + (state.path ? state.path + '/' : '') + name }
-        : null;
       const picked = state.entries.find((item) => item.name === name);
-      updateFooter(state.selected && picked && state.multi.size === 1
-        ? `选中：${name}${picked.isDir ? '（目录）' : '（' + fmtSize(picked.size) + '）'}`
-        : (state.multi.size > 1 ? `已选 ${state.multi.size} 项` : undefined));
+      updateFooter(state.multi.size > 1
+        ? `已选 ${state.multi.size} 项`
+        : (state.selected && picked ? `选中：${name}${picked.isDir ? '（目录）' : '（' + fmtSize(picked.size) + '）'}` : undefined));
     };
     row.querySelectorAll('button[data-op]').forEach((button) => {
       button.onclick = (e) => {
@@ -2330,7 +2412,7 @@ function renderEntries() {
     });
     row.ondblclick = () => {
       if (row.dataset.dir === 'true') enterDir(row.dataset.name);
-      else downloadEntry(row.dataset.name);
+      else previewEntry(state.active + ':' + (state.path ? state.path + '/' : '') + row.dataset.name);
     };
     row.oncontextmenu = (e) => {
       e.preventDefault();
@@ -3569,6 +3651,33 @@ async function showInfo(remotePath) {
     document.getElementById('info-body').innerHTML = Object.keys(info).map((key) => `<p>${esc(key)}：${esc(info[key])}</p>`).join('');
     document.getElementById('info-dialog').showModal();
   } catch (err) { notify('读取属性失败：' + err, true); }
+}
+
+// 复制连接地址（端点/共享路径）与含密钥的完整连接配置。
+async function copyConnectionAddress(name) {
+  try {
+    const def = await api().GetConnection(name);
+    const value = String(def.endpoint || '').trim();
+    if (!value) { notify('该连接没有可复制的地址', true); return; }
+    api().SetClipboard(value);
+    notify('已复制连接地址：' + value);
+  } catch (err) { notify('读取连接失败：' + err, true); }
+}
+
+async function copyConnectionConfig(name) {
+  try {
+    const text = await api().ConnectionConfigText(name, true);
+    api().SetClipboard(text);
+    notify('已复制连接配置（含密钥），请注意保管');
+  } catch (err) { notify('复制配置失败：' + err, true); }
+}
+
+async function copyAllConnectionConfig() {
+  try {
+    const text = await api().ConnectionConfigText('', true);
+    api().SetClipboard(text);
+    notify('已复制全部连接配置（含密钥），请注意保管');
+  } catch (err) { notify('复制配置失败：' + err, true); }
 }
 
 async function copyPath(remotePath, absolute) {

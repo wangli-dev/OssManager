@@ -35,7 +35,7 @@ import (
 	"OssManager/internal/transfer"
 )
 
-const appVersion = "1.4.4"
+const appVersion = "1.4.5"
 
 func logf(format string, args ...interface{}) {
 	_ = os.MkdirAll(config.DataDir(), 0o755)
@@ -207,6 +207,63 @@ func (a *App) ListConnections() ([]config.Connection, error) {
 		return nil, err
 	}
 	return config.ApplyOrder(connections, config.ReadOrder()), nil
+}
+
+// ConnectionConfigText 返回连接配置文本；name 为空时返回整个配置文件。
+// includeSecrets 为 false 时对密钥/密码做掩码；为 true 时原样返回（用于复制含密钥配置）。
+func (a *App) ConnectionConfigText(name string, includeSecrets bool) (string, error) {
+	data, err := os.ReadFile(a.settings.RcloneConfig)
+	if err != nil {
+		return "", err
+	}
+	text := string(data)
+	name = strings.TrimSpace(name)
+	if name != "" {
+		text, err = configSectionText(text, name)
+		if err != nil {
+			return "", err
+		}
+	}
+	if !includeSecrets {
+		text = maskConfigSecrets(text)
+	}
+	return strings.TrimSpace(text) + "\n", nil
+}
+
+func configSectionText(text, name string) (string, error) {
+	lines := strings.Split(text, "\n")
+	start := -1
+	for index, line := range lines {
+		trimmed := strings.TrimSpace(strings.TrimSuffix(line, "\r"))
+		if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
+			section := strings.TrimSpace(trimmed[1 : len(trimmed)-1])
+			if start >= 0 {
+				return strings.Join(lines[start:index], "\n"), nil
+			}
+			if strings.EqualFold(section, name) {
+				start = index
+			}
+		}
+	}
+	if start < 0 {
+		return "", fmt.Errorf("未找到连接 %s", name)
+	}
+	return strings.Join(lines[start:], "\n"), nil
+}
+
+func maskConfigSecrets(text string) string {
+	var builder strings.Builder
+	for _, line := range strings.Split(text, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if index := strings.Index(trimmed, "="); index > 0 {
+			key := strings.ToLower(strings.TrimSpace(trimmed[:index]))
+			if strings.Contains(key, "secret") || strings.Contains(key, "pass") || strings.Contains(key, "token") {
+				line = line[:strings.Index(line, "=")+1] + " ***"
+			}
+		}
+		builder.WriteString(line + "\n")
+	}
+	return strings.TrimRight(builder.String(), "\n")
 }
 
 // GetConnection 返回编辑所需的连接字段；密钥不回传，留空表示不修改。

@@ -36,9 +36,10 @@ func main() {
 	app := NewApp()
 
 	err = wails.Run(&options.App{
-		Title:  "OssManager",
-		Width:  1120,
-		Height: 760,
+		Title:     "OssManager",
+		Frameless: true,
+		Width:     1120,
+		Height:    760,
 		AssetServer: &assetserver.Options{
 			Assets: assets,
 		},
